@@ -23,18 +23,18 @@ CREATE INDEX IF NOT EXISTS idx_files_hash ON files(hash);
 -- Zeilenobjekte
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS lines (
-    id INTEGER NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id INTEGER NOT NULL,
     line_number INTEGER NOT NULL,
     line_type TEXT NOT NULL CHECK(line_type IN ('code', 'comment', 'struct', 'method', 'property', 'string')),
     line_hash TEXT,
     modified INTEGER,
-    PRIMARY KEY (file_id, id),
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_lines_file ON lines(file_id);
 CREATE INDEX IF NOT EXISTS idx_lines_type ON lines(line_type);
+CREATE INDEX IF NOT EXISTS idx_lines_file_id_id ON lines(file_id, id);
 
 -- ------------------------------------------------------------
 -- Items (Terme)
@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS occurrences (
     line_id INTEGER NOT NULL,
     PRIMARY KEY (item_id, file_id, line_id),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
-    FOREIGN KEY (file_id, line_id) REFERENCES lines(file_id, id) ON DELETE CASCADE
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    FOREIGN KEY (line_id) REFERENCES lines(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_occurrences_item ON occurrences(item_id);

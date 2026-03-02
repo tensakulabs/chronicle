@@ -205,23 +205,31 @@ export async function startViewer(projectPath: string): Promise<string> {
                     const freshDb = openDatabase(dbPath, true);
                     const tree = await buildTree(freshDb.getDb(), projectPath, mode, viewerSessionChanges, cachedGitInfo);
                     freshDb.close();
-                    ws.send(JSON.stringify({ type: 'tree', mode, data: tree }));
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'tree', mode, data: tree }));
+                    }
                 }
                 else if (msg.type === 'getSignature' && msg.file) {
                     const freshDb = openDatabase(dbPath, true);
                     const signature = await getFileSignature(freshDb.getDb(), msg.file);
                     freshDb.close();
-                    ws.send(JSON.stringify({ type: 'signature', file: msg.file, data: signature }));
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'signature', file: msg.file, data: signature }));
+                    }
                 }
                 else if (msg.type === 'getFileContent' && msg.file) {
                     const content = getFileContent(projectRoot, msg.file);
-                    ws.send(JSON.stringify({ type: 'fileContent', file: msg.file, data: content }));
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'fileContent', file: msg.file, data: content }));
+                    }
                 }
                 else if (msg.type === 'getTasks') {
                     const freshDb = openDatabase(dbPath, true);
                     const taskData = getTasksFromDb(freshDb.getDb());
                     freshDb.close();
-                    ws.send(JSON.stringify({ type: 'tasks', data: taskData }));
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'tasks', data: taskData }));
+                    }
                 }
                 else if (msg.type === 'updateTaskStatus' && msg.taskId && msg.status) {
                     const taskData = updateTaskStatus(msg.taskId as number, msg.status as string);
@@ -236,7 +244,9 @@ export async function startViewer(projectPath: string): Promise<string> {
                 }
             } catch (err) {
                 console.error('[Viewer] Error:', err);
-                ws.send(JSON.stringify({ type: 'error', message: String(err) }));
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'error', message: String(err) }));
+                }
             }
         });
 
@@ -248,7 +258,9 @@ export async function startViewer(projectPath: string): Promise<string> {
         const initDb = openDatabase(dbPath, true);
         buildTree(initDb.getDb(), projectPath, 'code', viewerSessionChanges, cachedGitInfo).then(tree => {
             initDb.close();
-            ws.send(JSON.stringify({ type: 'tree', mode: 'code', data: tree }));
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'tree', mode: 'code', data: tree }));
+            }
         }).catch(err => {
             initDb.close();
             console.error('[Viewer] Failed to build initial tree:', err);

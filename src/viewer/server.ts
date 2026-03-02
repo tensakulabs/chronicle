@@ -249,6 +249,9 @@ export async function startViewer(projectPath: string): Promise<string> {
         buildTree(initDb.getDb(), projectPath, 'code', viewerSessionChanges, cachedGitInfo).then(tree => {
             initDb.close();
             ws.send(JSON.stringify({ type: 'tree', mode: 'code', data: tree }));
+        }).catch(err => {
+            initDb.close();
+            console.error('[Viewer] Failed to build initial tree:', err);
         });
     });
 

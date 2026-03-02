@@ -33,7 +33,15 @@ export function createServer() {
 
     // Register tool call handler
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
-        return handleToolCall(request.params.name, request.params.arguments ?? {});
+        try {
+            return await handleToolCall(request.params.name, request.params.arguments ?? {});
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: "Internal error: " + message }],
+                isError: true,
+            };
+        }
     });
 
     return {

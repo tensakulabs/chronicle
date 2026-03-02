@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# Local Chronicle databases (for testing)
+.codegraph/
+.aidex/
+.chronicle/
+
+# Generated HTML documentation
+*.html
+
+# Test/sample projects
+SampleLangProjects/
+
+# Local Claude settings
+.claude/settings.local.json
+
+# Token/credential files
+.mcpregistry_*
+
+# Windows nul artifact
+nul
+
+# Code review and local issue tracking (local only)
+CODE-REVIEW.md
+ISSUES.md
+
+# Internal documents (not for public)
+docs/posts/
+FUTURE.md
+CODEGRAPH-SPEC.html
+MCP-API-REFERENCE.html
+.claude/PROJEKT-EINSTIEG.md
+
+# Internal scripts
+aidex-init-all.bat
+aidex-scan.bat
+npm-publish.bat
+server.json

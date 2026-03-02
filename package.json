@@ -60,7 +60,7 @@
   "author": "Tensaku Labs",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "better-sqlite3": "^11.0.0",
     "chokidar": "^5.0.0",
     "express": "^4.22.1",

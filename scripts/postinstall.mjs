@@ -1,2 +1,2 @@
-// Postinstall hint - shown after npm install -g aidex-mcp
-console.log('\n  AiDex installed! Run "aidex setup" to register with your AI clients.\n');
+// Postinstall hint - shown after npm install -g chronicle
+console.log('\n  Chronicle installed! Run "chronicle setup" to register with your AI clients.\n');

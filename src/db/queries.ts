@@ -189,11 +189,12 @@ export class Queries {
     // Lines
     // --------------------------------------------------------
 
-    insertLine(fileId: number, lineId: number, lineNumber: number, lineType: LineRow['line_type'], lineHash?: string, modified?: number): void {
+    insertLine(fileId: number, lineNumber: number, lineType: LineRow['line_type'], lineHash?: string, modified?: number): number {
         this._insertLine ??= this.db.prepare(
-            'INSERT INTO lines (file_id, id, line_number, line_type, line_hash, modified) VALUES (?, ?, ?, ?, ?, ?)'
+            'INSERT INTO lines (file_id, line_number, line_type, line_hash, modified) VALUES (?, ?, ?, ?, ?)'
         );
-        this._insertLine.run(fileId, lineId, lineNumber, lineType, lineHash ?? null, modified ?? Date.now());
+        const result = this._insertLine.run(fileId, lineNumber, lineType, lineHash ?? null, modified ?? Date.now());
+        return result.lastInsertRowid as number;
     }
 
     getLinesByFile(fileId: number): LineRow[] {
@@ -439,13 +440,13 @@ export class Queries {
     /**
      * Bulk insert lines
      */
-    bulkInsertLines(fileId: number, lines: Array<{ lineId: number; lineNumber: number; lineType: LineRow['line_type']; lineHash?: string; modified?: number }>): void {
+    bulkInsertLines(fileId: number, lines: Array<{ lineId?: number; lineNumber: number; lineType: LineRow['line_type']; lineHash?: string; modified?: number }>): void {
         const stmt = this.db.prepare(
-            'INSERT INTO lines (file_id, id, line_number, line_type, line_hash, modified) VALUES (?, ?, ?, ?, ?, ?)'
+            'INSERT INTO lines (file_id, line_number, line_type, line_hash, modified) VALUES (?, ?, ?, ?, ?)'
         );
         const now = Date.now();
         for (const line of lines) {
-            stmt.run(fileId, line.lineId, line.lineNumber, line.lineType, line.lineHash ?? null, line.modified ?? now);
+            stmt.run(fileId, line.lineNumber, line.lineType, line.lineHash ?? null, line.modified ?? now);
         }
     }
 

@@ -30,12 +30,16 @@ let viewerDbPath: string | null = null;
 let viewerDb: ReturnType<typeof openDatabase> | null = null;
 
 interface ViewerMessage {
-    type: 'getTree' | 'getSignature' | 'getFileContent' | 'getTasks' | 'updateTaskStatus';
+    type: 'getTree' | 'getSignature' | 'getFileContent' | 'getTasks' | 'updateTaskStatus' | 'createTask';
     mode?: 'code' | 'all';  // Tree mode
     path?: string;
     file?: string;
     taskId?: number;
     status?: string;
+    title?: string;
+    priority?: number;
+    tags?: string;
+    description?: string;
 }
 
 interface TreeNode {
@@ -262,6 +266,22 @@ export async function startViewer(projectPath: string): Promise<string> {
                         });
                     }
                 }
+                else if (msg.type === 'createTask' && msg.title) {
+                    const taskData = createTaskInDb(
+                        msg.title,
+                        msg.priority || 2,
+                        msg.tags || '',
+                        msg.description || ''
+                    );
+                    if (taskData) {
+                        // Broadcast updated task list to all clients
+                        wss!.clients.forEach((client) => {
+                            if (client.readyState === WebSocket.OPEN) {
+                                client.send(JSON.stringify({ type: 'tasks', data: taskData }));
+                            }
+                        });
+                    }
+                }
             } catch (err) {
                 console.error('[Viewer] Error:', err);
                 if (ws.readyState === WebSocket.OPEN) {
@@ -464,7 +484,7 @@ async function buildTree(
     }
 
     const root: TreeNode = {
-        name: path.basename(projectPath),
+        name: path.basename(path.resolve(projectPath)),
         path: '',
         type: 'dir',
         children: []
@@ -702,6 +722,53 @@ function updateTaskStatus(taskId: number, status: string): unknown[] | null {
 }
 
 /**
+ * Create a new task from the viewer
+ */
+function createTaskInDb(title: string, priority: number, tags: string, description: string): unknown[] | null {
+    if (!viewerDbPath) return null;
+
+    try {
+        const writeDb = openDatabase(viewerDbPath, false);
+        const db = writeDb.getDb();
+        const now = Date.now();
+
+        // Ensure tasks table exists
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT,
+                priority INTEGER NOT NULL DEFAULT 2 CHECK(priority IN (1, 2, 3)),
+                status TEXT NOT NULL DEFAULT 'backlog' CHECK(status IN ('backlog', 'active', 'done', 'cancelled')),
+                tags TEXT,
+                source TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                completed_at INTEGER
+            );
+        `);
+
+        const result = db.prepare(
+            `INSERT INTO tasks (title, description, priority, status, tags, source, sort_order, created_at, updated_at)
+             VALUES (?, ?, ?, 'backlog', ?, 'viewer', 0, ?, ?)`
+        ).run(title, description || null, priority, tags || null, now, now);
+
+        // Auto-log creation
+        db.prepare(
+            `INSERT INTO task_log (task_id, note, created_at) VALUES (?, ?, ?)`
+        ).run(result.lastInsertRowid, 'Task created (via Viewer)', now);
+
+        const taskData = getTasksFromDb(db);
+        writeDb.close();
+        return taskData;
+    } catch (err) {
+        console.error('[Viewer] Failed to create task:', err);
+        return null;
+    }
+}
+
+/**
  * Escape HTML special characters to prevent XSS
  */
 function escapeHtml(str: string): string {
@@ -714,1136 +781,2676 @@ function escapeHtml(str: string): string {
 }
 
 function getViewerHTML(projectPath: string): string {
-    const projectName = escapeHtml(path.basename(projectPath));
+    const projectName = escapeHtml(path.basename(path.resolve(projectPath)));
 
     return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="observatory">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(PRODUCT_NAME)} · ${projectName}</title>
+
+    <!-- Google Fonts: IBM Plex Sans (UI) + JetBrains Mono (code) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+
+    <!-- highlight.js: tokyo-night-dark theme -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.0/styles/tokyo-night-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.0/highlight.min.js"></script>
+
     <style>
-        :root {
-            --bg-primary: #2e3440;
-            --bg-secondary: #3b4252;
-            --bg-tertiary: #434c5e;
-            --text-primary: #d8dee9;
-            --text-secondary: #b8c5d6;
-            --text-muted: #616e88;
-            --accent: #88c0d0;
-            --accent-green: #a3be8c;
-            --accent-orange: #d08770;
-            --accent-purple: #b48ead;
-            --accent-cyan: #8fbcbb;
-            --accent-yellow: #ebcb8b;
-            --accent-red: #bf616a;
-            --border: #4c566a;
+        /* ============================================================
+           THEME DEFINITIONS
+           ============================================================ */
+
+        /* Observatory — dense dark scientific instrument */
+        :root,
+        [data-theme="observatory"] {
+            --bg-primary:    #0d1117;
+            --bg-secondary:  #161b22;
+            --bg-tertiary:   #21262d;
+            --bg-elevated:   #282e36;
+            --text-primary:  #e6edf3;
+            --text-secondary:#8b949e;
+            --text-muted:    #484f58;
+            --accent:        #58a6ff;
+            --accent-warm:   #d29922;
+            --accent-green:  #3fb950;
+            --accent-red:    #f85149;
+            --accent-purple: #bc8cff;
+            --border:        #30363d;
+            --border-subtle: #21262d;
+
+            --scrollbar-track: #0d1117;
+            --scrollbar-thumb: #30363d;
+            --scrollbar-thumb-hover: #484f58;
+
+            --header-height: 44px;
+            --tree-width: 280px;
+            --splitter-width: 6px;
+            --tab-height: 38px;
         }
 
-        /* ── Theme Switcher ── */
-        #theme-switcher {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 99999;
-            font-family: system-ui, sans-serif;
-            user-select: none;
-        }
-        #theme-gear-btn {
-            width: 32px;
-            height: 32px;
-            background: rgba(0,0,0,0.55);
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 8px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: background 0.15s, opacity 0.15s;
-            opacity: 0.45;
-            margin-left: auto;
-        }
-        #theme-gear-btn:hover { background: rgba(0,0,0,0.75); opacity: 1; }
-        #theme-gear-btn svg { width: 16px; height: 16px; fill: #fff; }
-        #theme-panel {
-            display: none;
-            background: rgba(0,0,0,0.82);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 10px;
-            padding: 10px 12px;
-            font-size: 12px;
-            color: #fff;
-            min-width: 155px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-            margin-bottom: 6px;
-        }
-        #theme-panel.open { display: block; }
-        #theme-switcher-label {
-            font-size: 9px;
-            text-transform: uppercase;
-            letter-spacing: 1.2px;
-            opacity: 0.45;
-            margin-bottom: 7px;
-        }
-        .theme-btn {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            width: 100%;
-            text-align: left;
-            background: transparent;
-            border: none;
-            color: rgba(255,255,255,0.75);
-            padding: 5px 7px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 12px;
-            font-family: inherit;
-            transition: background 0.12s, color 0.12s;
-        }
-        .theme-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
-        .theme-btn.active { background: rgba(255,255,255,0.15); color: #fff; font-weight: 600; }
-        .theme-swatch {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            flex-shrink: 0;
-            border: 1px solid rgba(255,255,255,0.2);
+        /* Polar — clean light scientific */
+        [data-theme="polar"] {
+            --bg-primary:    #ffffff;
+            --bg-secondary:  #f6f8fa;
+            --bg-tertiary:   #eaeef2;
+            --bg-elevated:   #dde3ea;
+            --text-primary:  #1a2028;
+            --text-secondary:#57606a;
+            --text-muted:    #9aa0a8;
+            --accent:        #0969da;
+            --accent-warm:   #bf8700;
+            --accent-green:  #1a7f37;
+            --accent-red:    #cf222e;
+            --accent-purple: #7c3aed;
+            --border:        #d0d7de;
+            --border-subtle: #eaeef2;
+
+            --scrollbar-track: #f6f8fa;
+            --scrollbar-thumb: #d0d7de;
+            --scrollbar-thumb-hover: #9aa0a8;
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        /* Amber — warm dark charcoal */
+        [data-theme="amber"] {
+            --bg-primary:    #1a1610;
+            --bg-secondary:  #211d15;
+            --bg-tertiary:   #2a2418;
+            --bg-elevated:   #342e1f;
+            --text-primary:  #eddcb0;
+            --text-secondary:#b09868;
+            --text-muted:    #5c4f30;
+            --accent:        #d4a017;
+            --accent-warm:   #e8891a;
+            --accent-green:  #7aad6b;
+            --accent-red:    #d45f4e;
+            --accent-purple: #a07ad4;
+            --border:        #3d3420;
+            --border-subtle: #2a2418;
+
+            --scrollbar-track: #1a1610;
+            --scrollbar-thumb: #3d3420;
+            --scrollbar-thumb-hover: #5c4f30;
+        }
+
+        /* ============================================================
+           RESET & BASE
+           ============================================================ */
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body {
+            height: 100%;
+            overflow: hidden;
+        }
 
         body {
-            font-family: 'Segoe UI', system-ui, sans-serif;
+            font-family: 'IBM Plex Sans', system-ui, sans-serif;
+            font-size: 13px;
+            line-height: 1.5;
             background: var(--bg-primary);
             color: var(--text-primary);
-            height: 100vh;
             display: flex;
             flex-direction: column;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
-        header {
-            background: var(--bg-secondary);
-            padding: 12px 20px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
+        /* ============================================================
+           SCROLLBAR STYLING
+           ============================================================ */
 
-        header h1 {
-            font-size: 1.3em;
-            color: var(--accent);
-            font-weight: 500;
-        }
-
-        header .header-sep {
-            color: var(--text-muted);
-            font-size: 1em;
-            margin: 0 2px;
-        }
-
-        header .project-name {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            color: var(--text-secondary);
-            font-weight: 400;
-            font-size: 0.95em;
-        }
-
-        header .project-name .folder-icon {
-            width: 16px;
-            height: 16px;
-            opacity: 0.65;
-            flex-shrink: 0;
-        }
-
-        header .project-name .folder-icon svg {
-            width: 16px;
-            height: 16px;
-            fill: var(--text-secondary);
-        }
-
-        header .project-name .project-label {
-            color: var(--text-primary);
-            font-weight: 500;
-        }
-
-        .container {
-            display: flex;
-            flex: 1;
-            overflow: hidden;
-        }
-
-        /* Splitter */
-        .splitter {
+        ::-webkit-scrollbar {
             width: 6px;
-            background: var(--bg-tertiary);
-            cursor: col-resize;
-            transition: background 0.2s;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--scrollbar-track);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--scrollbar-thumb);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--scrollbar-thumb-hover);
+        }
+
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+        }
+
+        :focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+            border-radius: 2px;
+        }
+
+        /* ============================================================
+           HEADER
+           ============================================================ */
+
+        #app-header {
+            height: var(--header-height);
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            gap: 0;
+            padding: 0 14px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            user-select: none;
+            position: relative;
+            z-index: 100;
+        }
+
+        .header-wordmark {
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--accent);
             flex-shrink: 0;
         }
 
-        .splitter:hover, .splitter.dragging {
-            background: var(--accent);
+        .header-sep {
+            color: var(--text-muted);
+            font-size: 16px;
+            font-weight: 300;
+            margin: 0 10px;
+            flex-shrink: 0;
         }
 
-        /* Panel styles */
-        .panel {
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .tree-panel {
-            width: 350px;
-            background: var(--bg-secondary);
-            border-right: 1px solid var(--border);
-        }
-
-        .detail-panel {
-            flex: 1;
-        }
-
-        /* Tab bar styles */
-        .tab-bar {
-            display: flex;
-            background: var(--bg-tertiary);
-            border-bottom: 1px solid var(--border);
-        }
-
-        .tab {
-            padding: 10px 20px;
-            cursor: pointer;
-            color: var(--text-primary);
-            border-bottom: 2px solid transparent;
-            transition: all 0.2s;
-        }
-
-        .tab:hover {
-            color: var(--accent);
-            background: rgba(122, 162, 247, 0.1);
-        }
-
-        .tab.active {
-            color: var(--accent);
-            border-bottom-color: var(--accent);
-        }
-
-        .panel-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 10px 0;
-        }
-
-        .detail-panel .panel-content {
-            padding: 20px;
-        }
-
-        /* Tree styles */
-        .tree-node {
-            padding: 6px 10px 6px 0;
-            cursor: pointer;
+        .header-project {
             display: flex;
             align-items: center;
             gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .header-project-icon {
+            width: 14px;
+            height: 14px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+
+        .header-project-icon svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .header-project-name {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-primary);
+            letter-spacing: 0.01em;
+        }
+
+        .header-stats {
+            font-size: 11px;
+            color: var(--text-muted);
+            letter-spacing: 0.02em;
+            margin-left: 12px;
+            flex-shrink: 0;
+        }
+
+        .header-session {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+            color: var(--accent-warm);
+            margin-left: 10px;
+            flex-shrink: 0;
+        }
+
+        .header-session-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent-warm);
+            flex-shrink: 0;
+            animation: pulse-dot 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .header-spacer {
+            flex: 1;
+        }
+
+        #cmd-palette-trigger {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: 'IBM Plex Sans', sans-serif;
+            transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+            letter-spacing: 0.02em;
+            flex-shrink: 0;
+            margin-right: 8px;
+        }
+
+        #cmd-palette-trigger:hover {
+            background: var(--bg-elevated);
+            border-color: var(--accent);
+            color: var(--text-secondary);
+        }
+
+        .cmd-palette-trigger-label {
+            color: var(--text-muted);
+            font-size: 11px;
+        }
+
+        .cmd-palette-trigger-kbd {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            font-size: 10px;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 1px 5px;
+        }
+
+        /* ============================================================
+           MAIN LAYOUT CONTAINER
+           ============================================================ */
+
+        #app-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        /* ============================================================
+           TREE PANEL (LEFT)
+           ============================================================ */
+
+        #tree-panel {
+            width: var(--tree-width);
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            overflow: hidden;
+            min-width: 160px;
+            max-width: 600px;
+        }
+
+        #tree-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border-subtle);
+            flex-shrink: 0;
+            background: var(--bg-secondary);
+        }
+
+        .tree-filter-label {
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .tree-info-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            font-size: 9px;
+            font-weight: 600;
+            color: var(--text-muted);
+            cursor: help;
+            flex-shrink: 0;
+            font-family: 'IBM Plex Sans', sans-serif;
+            transition: color 0.15s ease, border-color 0.15s ease;
+            position: relative;
+        }
+
+        .tree-info-icon:hover {
+            color: var(--text-secondary);
+            border-color: var(--text-muted);
+        }
+
+        .tree-info-tooltip {
+            display: none;
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 11px;
+            font-weight: 400;
+            letter-spacing: normal;
+            text-transform: none;
+            color: var(--text-secondary);
             white-space: nowrap;
+            z-index: 100;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            line-height: 1.5;
+        }
+
+        .tree-info-icon:hover .tree-info-tooltip {
+            display: block;
+        }
+
+        .tree-filter-pills {
+            display: flex;
+            flex-shrink: 0;
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+
+        .tree-filter-pill {
+            padding: 2px 10px;
+            border-radius: 0;
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.04em;
+            cursor: pointer;
+            border: none;
+            border-right: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            font-family: 'IBM Plex Sans', sans-serif;
+            transition: background 0.15s ease, color 0.15s ease;
+            text-transform: uppercase;
+        }
+
+        .tree-filter-pill:last-child {
+            border-right: none;
+        }
+
+        .tree-filter-pill:hover {
+            background: var(--bg-elevated);
+            color: var(--text-secondary);
+        }
+
+        .tree-filter-pill.active {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        #tree-scroll {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 4px 0;
+        }
+
+        .tree-node {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            height: 24px;
+            padding-right: 8px;
+            cursor: pointer;
+            position: relative;
+            white-space: nowrap;
+            transition: background 0.1s ease;
         }
 
         .tree-node:hover {
-            background: rgba(122, 162, 247, 0.1);
+            background: var(--bg-elevated);
         }
 
         .tree-node.selected {
-            background: rgba(122, 162, 247, 0.2);
+            background: var(--bg-elevated);
         }
 
-        .tree-node .status-icon {
-            width: 16px;
-            font-size: 11px;
-            text-align: center;
+        .tree-node.selected::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--accent);
+            border-radius: 0 1px 1px 0;
+        }
+
+        .tree-indent {
+            display: inline-block;
             flex-shrink: 0;
         }
 
-        .tree-node .status-icon.modified {
-            color: var(--accent-orange);
-        }
-
-        .tree-node .status-icon.new {
-            color: var(--accent-green);
-        }
-
-        .tree-node .status-icon.unchanged {
-            color: var(--accent-green);
-            opacity: 0.7;
-        }
-
-        /* Git status diamond icon */
-        .tree-node .git-status {
-            width: 16px;
-            height: 16px;
-            flex-shrink: 0;
+        .tree-toggle {
+            width: 14px;
+            height: 14px;
             display: flex;
             align-items: center;
             justify-content: center;
-        }
-
-        .tree-node .git-status svg {
-            width: 10px;
-            height: 10px;
-        }
-
-        .tree-node .git-status.untracked svg { fill: var(--text-muted); }
-        .tree-node .git-status.modified svg { fill: var(--accent-yellow); }
-        .tree-node .git-status.committed svg { fill: var(--accent-cyan); }
-        .tree-node .git-status.pushed svg { fill: var(--accent-green); }
-
-        .tree-node .icon {
-            width: 18px;
-            text-align: center;
             flex-shrink: 0;
+            color: var(--text-muted);
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            transition: color 0.15s ease;
         }
 
-        .tree-node .name {
+        .tree-toggle.is-open::after {
+            content: 'v';
+        }
+
+        .tree-toggle.is-closed::after {
+            content: '>';
+        }
+
+        .tree-toggle.leaf {
+            /* spacer for files */
+        }
+
+        .tree-status-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin: 0 5px 0 4px;
+        }
+
+        .tree-status-dot.status-unchanged {
+            background: var(--accent-green);
+            opacity: 0.35;
+        }
+
+        .tree-status-dot.status-modified {
+            background: var(--accent-warm);
+        }
+
+        .tree-status-dot.status-new {
+            background: var(--accent);
+        }
+
+        .tree-status-dot.no-dot {
+            background: transparent;
+        }
+
+        .tree-git-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 1px;
+            flex-shrink: 0;
+            margin: 0 5px 0 0;
+            transform: rotate(45deg);
+        }
+
+        .tree-git-dot.git-untracked  { background: var(--text-muted); opacity: 0.5; }
+        .tree-git-dot.git-modified   { background: var(--accent-warm); }
+        .tree-git-dot.git-committed  { background: var(--accent); }
+        .tree-git-dot.git-pushed     { background: var(--accent-green); }
+        .tree-git-dot.git-none       { background: transparent; }
+
+        .tree-label {
+            font-size: 12px;
             flex: 1;
             overflow: hidden;
             text-overflow: ellipsis;
+            white-space: nowrap;
+            transition: color 0.1s ease;
         }
 
-        .tree-node .stats {
-            font-size: 0.75em;
-            color: var(--text-muted);
+        .tree-node.dir .tree-label {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .tree-node.file .tree-label {
+            color: var(--text-primary);
+            font-weight: 400;
+        }
+
+        .tree-node.selected .tree-label {
+            color: var(--text-primary);
+        }
+
+        .tree-badges {
+            display: inline-flex;
+            gap: 4px;
+            flex-shrink: 0;
             margin-left: auto;
-            padding-right: 10px;
+            padding-left: 8px;
         }
 
-        .tree-node.dir .icon { color: var(--accent-yellow); }
-        .tree-node.file .icon { color: var(--accent-cyan); }
-        .tree-node.file.config .icon { color: var(--accent-purple); }
-        .tree-node.file.doc .icon { color: var(--accent-green); }
-        .tree-node.file.test .icon { color: var(--accent-orange); }
+        .tree-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            font-weight: 500;
+            letter-spacing: 0.02em;
+            flex-shrink: 0;
+            padding: 1px 5px;
+            border-radius: 3px;
+            line-height: 1.4;
+        }
+
+        .tree-badge-m {
+            color: var(--accent);
+            background: color-mix(in srgb, var(--accent) 12%, transparent);
+        }
+
+        .tree-badge-t {
+            color: var(--accent-purple);
+            background: color-mix(in srgb, var(--accent-purple) 12%, transparent);
+        }
 
         .tree-children {
-            margin-left: 20px;
         }
 
         .tree-children.collapsed {
             display: none;
         }
 
-        /* Detail panel styles */
-        .detail-panel h2 {
-            color: var(--accent-purple);
-            font-size: 1.2em;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
+        /* ============================================================
+           SPLITTER
+           ============================================================ */
+
+        #splitter {
+            width: var(--splitter-width);
+            flex-shrink: 0;
+            background: var(--border-subtle);
+            cursor: col-resize;
+            transition: background 0.15s ease;
+            position: relative;
+        }
+
+        #splitter:hover,
+        #splitter.dragging {
+            background: var(--accent);
+        }
+
+        #splitter::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 2px;
+            height: 24px;
+            border-radius: 1px;
+            background: var(--border);
+            transition: background 0.15s ease;
+        }
+
+        #splitter:hover::before,
+        #splitter.dragging::before {
+            background: rgba(255,255,255,0.3);
+        }
+
+        /* ============================================================
+           DETAIL PANEL (RIGHT)
+           ============================================================ */
+
+        #detail-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: var(--bg-primary);
+            min-width: 0;
+        }
+
+        #detail-tab-bar {
+            display: flex;
+            align-items: stretch;
+            height: var(--tab-height);
             border-bottom: 1px solid var(--border);
-        }
-
-        .detail-panel .file-path {
-            color: var(--text-muted);
-            font-size: 0.9em;
-            margin-bottom: 20px;
-        }
-
-        .section {
-            margin-bottom: 25px;
-        }
-
-        .section h3 {
-            color: var(--accent-cyan);
-            font-size: 1em;
-            margin-bottom: 10px;
-        }
-
-        .header-comment {
             background: var(--bg-secondary);
-            padding: 15px;
-            border-radius: 6px;
-            font-family: 'Consolas', 'Fira Code', monospace;
-            font-size: 0.9em;
-            white-space: pre-wrap;
-            color: var(--accent-green);
-            border-left: 3px solid var(--accent-green);
+            flex-shrink: 0;
+            gap: 0;
+            padding: 0 16px;
         }
 
-        .method-list, .type-list {
-            list-style: none;
-        }
-
-        .method-list li, .type-list li {
-            padding: 8px 12px;
-            background: var(--bg-secondary);
-            margin-bottom: 6px;
-            border-radius: 4px;
-            font-family: 'Consolas', monospace;
-            font-size: 0.85em;
+        .detail-tab {
             display: flex;
             align-items: center;
-            gap: 10px;
-        }
-
-        .method-list .line-num, .type-list .line-num {
+            padding: 0 14px;
+            font-weight: 500;
             color: var(--text-muted);
-            font-size: 0.8em;
-            min-width: 40px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            border-bottom: 2px solid transparent;
+            transition: color 0.15s ease, border-color 0.15s ease;
+            white-space: nowrap;
+            font-family: 'IBM Plex Sans', sans-serif;
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 0.08em;
         }
 
-        .method-list .visibility {
-            color: var(--accent-purple);
-            font-size: 0.75em;
-            padding: 2px 6px;
-            background: rgba(187, 154, 247, 0.15);
-            border-radius: 3px;
+        .detail-tab:hover {
+            color: var(--text-secondary);
         }
 
-        .method-list .modifier {
-            color: var(--accent-orange);
-            font-size: 0.75em;
+        .detail-tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
         }
 
-        .type-list .kind {
-            color: var(--accent-yellow);
-            font-size: 0.75em;
-            padding: 2px 6px;
-            background: rgba(224, 175, 104, 0.15);
-            border-radius: 3px;
-        }
-
-        .empty-state {
+        .tab-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 16px;
+            height: 16px;
+            background: var(--bg-elevated);
+            border-radius: 8px;
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
             color: var(--text-muted);
-            text-align: center;
-            padding: 40px;
+            margin-left: 6px;
+            padding: 0 4px;
         }
 
-        .loading {
+        .detail-tab.active .tab-badge {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .tab-bar-spacer {
+            flex: 1;
+        }
+
+        .tab-bar-context {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 10px;
             color: var(--text-muted);
-            padding: 20px;
-            text-align: center;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.02em;
         }
 
-        /* Code view styles */
-        .code-view {
+        .tab-bar-context .context-sep {
+            color: var(--border);
+        }
+
+        .tab-bar-context .context-filename {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        #file-header-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 20px;
+            border-bottom: 1px solid var(--border-subtle);
             background: var(--bg-secondary);
-            border-radius: 6px;
-            overflow: hidden;
+            flex-shrink: 0;
+            min-height: 36px;
         }
 
-        .code-view pre {
+        #file-header-bar.hidden {
+            display: none;
+        }
+
+        .file-breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            flex: 1;
+            overflow: hidden;
+            min-width: 0;
+        }
+
+        .breadcrumb-dir {
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .breadcrumb-sep {
+            color: var(--text-muted);
+            font-size: 10px;
+            flex-shrink: 0;
+        }
+
+        .breadcrumb-file {
+            color: var(--text-primary);
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-stat-pills {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .file-stat-pill {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            letter-spacing: 0.04em;
+            padding: 2px 7px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            background: var(--bg-tertiary);
+        }
+
+        .file-stat-pill.methods { border-color: var(--accent); color: var(--accent); }
+        .file-stat-pill.types   { border-color: var(--accent-purple); color: var(--accent-purple); }
+
+        #detail-content {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .detail-view {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            display: none;
+            padding: 20px;
+        }
+
+        .detail-view.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        #source-view {
+            padding: 0;
+        }
+
+        /* ---- Empty State ---- */
+        .empty-state {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: var(--text-muted);
+            padding: 40px;
+            text-align: center;
+        }
+
+        .empty-state-icon {
+            width: 32px;
+            height: 32px;
+            opacity: 0.25;
+        }
+
+        .empty-state-icon svg {
+            width: 32px;
+            height: 32px;
+            fill: currentColor;
+        }
+
+        .empty-state-label {
+            font-size: 12px;
+            font-weight: 400;
+            letter-spacing: 0.03em;
+            color: var(--text-muted);
+        }
+
+        .empty-state-hint {
+            font-size: 11px;
+            color: var(--text-muted);
+            opacity: 0.6;
+        }
+
+        .loading-state {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-muted);
+            font-size: 11px;
+            padding: 20px;
+        }
+
+        .loading-dot {
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            animation: loading-bounce 1.4s ease-in-out infinite;
+        }
+        .loading-dot:nth-child(2) { animation-delay: 0.2s; }
+        .loading-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes loading-bounce {
+            0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+            40%            { opacity: 1;   transform: scale(1); }
+        }
+
+        /* ============================================================
+           SIGNATURE VIEW COMPONENTS
+           ============================================================ */
+
+        .sig-section {
+            margin-bottom: 24px;
+        }
+
+        .sig-section-title {
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .sig-header-comment {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--accent-green);
+            background: var(--bg-secondary);
+            border-left: 2px solid var(--accent-green);
+            padding: 12px 14px;
+            border-radius: 0 4px 4px 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .sig-method-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .sig-method-item {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 7px 12px;
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            transition: background 0.1s ease;
+        }
+
+        .sig-method-item:hover {
+            background: var(--bg-elevated);
+        }
+
+        .sig-method-line {
+            font-size: 10px;
+            color: var(--text-muted);
+            min-width: 32px;
+            text-align: right;
+            flex-shrink: 0;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .sig-method-visibility {
+            font-size: 9px;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: rgba(188, 140, 255, 0.12);
+            color: var(--accent-purple);
+            border: 1px solid rgba(188, 140, 255, 0.25);
+            flex-shrink: 0;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .sig-method-modifier {
+            font-size: 9px;
+            color: var(--accent-warm);
+            flex-shrink: 0;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .sig-method-proto {
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .sig-type-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .sig-type-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 12px;
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            transition: background 0.1s ease;
+        }
+
+        .sig-type-item:hover {
+            background: var(--bg-elevated);
+        }
+
+        .sig-type-line {
+            font-size: 10px;
+            color: var(--text-muted);
+            min-width: 32px;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        .sig-type-kind {
+            font-size: 9px;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: rgba(210, 153, 34, 0.12);
+            color: var(--accent-warm);
+            border: 1px solid rgba(210, 153, 34, 0.25);
+            flex-shrink: 0;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .sig-type-name {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        /* ============================================================
+           SOURCE VIEW (CODE)
+           ============================================================ */
+
+        #source-view .code-container {
+            flex: 1;
+            overflow: auto;
+            min-height: 0;
+            display: flex;
+        }
+
+        .source-line-numbers {
+            flex-shrink: 0;
+            padding: 20px 0;
+            text-align: right;
+            user-select: none;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text-muted);
+            opacity: 0.5;
+            background: var(--bg-primary);
+            padding-left: 16px;
+            padding-right: 12px;
+            border-right: 1px solid var(--border-subtle);
+        }
+
+        .source-line-numbers span {
+            display: block;
+        }
+
+        #source-view pre {
             margin: 0;
-            padding: 15px;
-            overflow-x: auto;
-            font-size: 0.85em;
+            padding: 20px;
+            padding-left: 16px;
+            font-size: 12px;
+            line-height: 1.6;
+            tab-size: 4;
+            flex: 1;
+            min-width: 0;
+        }
+
+        #source-view code {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .hljs {
+            background: var(--bg-primary) !important;
+        }
+
+        /* ============================================================
+           TASKS VIEW
+           ============================================================ */
+
+        .task-section-label {
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin: 0 0 8px 0;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .task-section-label:not(:first-child) {
+            margin-top: 24px;
+        }
+
+        .task-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 8px;
+        }
+
+        .task-item {
+            padding: 10px 14px 10px 12px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            border-left: 2px solid var(--text-muted);
+            transition: background 0.1s ease;
+        }
+
+        .task-item:hover {
+            background: var(--bg-elevated);
+        }
+
+        .task-item.priority-1 { border-left-color: var(--accent-red); }
+        .task-item.priority-2 { border-left-color: var(--accent-warm); }
+        .task-item.priority-3 { border-left-color: var(--text-muted); }
+
+        .task-item.status-done      { opacity: 0.55; }
+        .task-item.status-cancelled { opacity: 0.4; text-decoration: line-through; }
+
+        .task-item-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+        }
+
+        .task-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-primary);
+            flex: 1;
+            min-width: 0;
+        }
+
+        .task-status-badge {
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            white-space: nowrap;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            font-family: 'JetBrains Mono', monospace;
+            flex-shrink: 0;
+        }
+
+        .task-status-badge.status-active     { color: var(--accent-green);  border-color: var(--accent-green); }
+        .task-status-badge.status-backlog    { color: var(--text-muted);    border-color: var(--border); }
+        .task-status-badge.status-done       { color: var(--text-muted);    border-color: var(--border); }
+        .task-status-badge.status-cancelled  { color: var(--accent-red);    border-color: var(--accent-red); }
+
+        .task-description {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 4px;
             line-height: 1.5;
         }
 
-        .code-view code {
-            font-family: 'Consolas', 'Fira Code', monospace;
+        .task-meta-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 6px;
         }
 
-        /* Override highlight.js background to match our theme */
-        .hljs {
-            background: var(--bg-secondary) !important;
+        .task-tags {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
         }
 
-        /* Task backlog styles */
-        .task-list { list-style: none; }
-        .task-item {
-            padding: 12px 14px;
-            background: var(--bg-secondary);
-            margin-bottom: 6px;
-            border-radius: 6px;
-            border-left: 3px solid var(--text-muted);
+        .task-tag {
+            font-size: 9px;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: rgba(88, 166, 255, 0.1);
+            color: var(--accent);
+            border: 1px solid rgba(88, 166, 255, 0.2);
+            font-family: 'JetBrains Mono', monospace;
         }
-        .task-item.priority-1 { border-left-color: var(--accent-red); }
-        .task-item.priority-2 { border-left-color: var(--accent-yellow); }
-        .task-item.priority-3 { border-left-color: var(--text-muted); }
-        .task-item.status-done { opacity: 0.6; }
-        .task-item.status-cancelled { opacity: 0.5; text-decoration: line-through; }
-        .task-title { font-weight: 600; font-size: 0.95em; }
-        .task-description { font-size: 0.85em; color: var(--text-secondary); margin-top: 4px; }
-        .task-meta { font-size: 0.8em; color: var(--text-muted); margin-top: 6px; display: flex; gap: 12px; }
-        .task-tags { color: var(--accent-cyan); font-size: 0.8em; margin-top: 4px; }
-        .task-section-header {
-            color: var(--accent-purple);
-            font-size: 1em;
-            font-weight: 600;
-            margin: 20px 0 10px 0;
-            padding-bottom: 6px;
-            border-bottom: 1px solid var(--border);
+
+        .task-actions {
+            display: flex;
+            gap: 4px;
+            margin-top: 8px;
         }
-        .task-section-header:first-child { margin-top: 0; }
-        .task-done-toggle {
-            cursor: pointer;
-            color: var(--text-muted);
-            font-size: 0.9em;
-            margin-top: 20px;
-            padding: 8px 0;
-            user-select: none;
-        }
-        .task-done-toggle:hover { color: var(--text-secondary); }
-        .task-done-list.collapsed { display: none; }
-        .task-actions { margin-top: 8px; display: flex; gap: 6px; }
+
         .task-btn {
-            padding: 3px 10px;
+            padding: 2px 10px;
+            font-size: 10px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-weight: 500;
             border: 1px solid var(--border);
             border-radius: 4px;
-            background: var(--bg-primary);
+            background: var(--bg-tertiary);
             color: var(--text-secondary);
             cursor: pointer;
-            font-size: 0.8em;
+            letter-spacing: 0.03em;
+            transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
         }
-        .task-btn:hover { background: var(--border); color: var(--text-primary); }
-        .task-btn-done { border-color: var(--accent-green, #4caf50); }
-        .task-btn-done:hover { background: var(--accent-green, #4caf50); color: #fff; }
-        .task-btn-cancel { border-color: var(--accent-red); }
-        .task-btn-cancel:hover { background: var(--accent-red); color: #fff; }
-        .task-group-toggle {
-            display: inline-flex; gap: 0; margin-left: 12px; font-size: 0.8em;
-            border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
+
+        .task-btn:hover {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
         }
-        .task-group-toggle button {
-            padding: 3px 10px; border: none; background: var(--bg-secondary);
-            color: var(--text-muted); cursor: pointer; font-size: 1em;
+
+        .task-btn.btn-done:hover {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+            color: #fff;
         }
-        .task-group-toggle button.active {
-            background: var(--accent-purple); color: #fff;
+
+        .task-btn.btn-cancel:hover {
+            background: var(--accent-red);
+            border-color: var(--accent-red);
+            color: #fff;
         }
-        .task-group-toggle button:hover:not(.active) {
-            background: var(--border); color: var(--text-primary);
+
+        .task-done-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 10px;
+            color: var(--text-muted);
+            cursor: pointer;
+            user-select: none;
+            padding: 6px 0;
+            margin-top: 16px;
+            transition: color 0.15s ease;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
         }
-        .task-tag-group-header {
-            color: var(--accent-cyan); font-size: 1em; font-weight: 600;
-            margin: 20px 0 8px 0; padding: 6px 0; border-bottom: 1px solid var(--border);
-            cursor: pointer; user-select: none;
+
+        .task-done-toggle:hover {
+            color: var(--text-secondary);
         }
-        .task-tag-group-header:first-of-type { margin-top: 0; }
-        .task-tag-group-header:hover { color: var(--text-primary); }
-        .task-tag-group.collapsed .task-list { display: none; }
-        .task-status-badge {
-            font-size: 0.75em; padding: 1px 6px; border-radius: 3px;
-            margin-left: 8px; font-weight: 400;
+
+        .task-done-toggle::before {
+            content: '>';
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            transition: transform 0.15s ease;
+            display: inline-block;
         }
-        .task-status-badge.status-active { color: var(--accent-green, #4caf50); border: 1px solid var(--accent-green, #4caf50); }
-        .task-status-badge.status-backlog { color: var(--text-muted); border: 1px solid var(--border); }
-        .task-status-badge.status-done { color: var(--text-muted); border: 1px solid var(--border); }
-        .task-status-badge.status-cancelled { color: var(--accent-red); border: 1px solid var(--accent-red); }
+
+        .task-done-toggle.open::before {
+            transform: rotate(90deg);
+        }
+
+        .task-done-list {
+            margin-top: 6px;
+        }
+
+        .task-done-list.collapsed {
+            display: none;
+        }
+
+        #tasks-filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .tasks-filter-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .tasks-group-toggle {
+            display: flex;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .tasks-group-btn {
+            padding: 3px 10px;
+            font-size: 10px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-weight: 500;
+            border: none;
+            background: var(--bg-secondary);
+            color: var(--text-muted);
+            cursor: pointer;
+            letter-spacing: 0.04em;
+            transition: background 0.1s ease, color 0.1s ease;
+        }
+
+        .tasks-group-btn + .tasks-group-btn {
+            border-left: 1px solid var(--border);
+        }
+
+        .tasks-group-btn.active {
+            background: var(--accent-purple);
+            color: #fff;
+        }
+
+        .tasks-group-btn:not(.active):hover {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+        }
+
+        /* ============================================================
+           COMMAND PALETTE OVERLAY
+           ============================================================ */
+
+        #cmd-palette-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 80px;
+            background: rgba(0, 0, 0, 0.55);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+            transition: opacity 0.15s ease;
+        }
+
+        #cmd-palette-overlay.hidden {
+            display: none;
+        }
+
+        #cmd-palette {
+            width: 600px;
+            max-width: calc(100vw - 40px);
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255,255,255,0.04);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            max-height: calc(100vh - 160px);
+        }
+
+        #cmd-palette-input-wrap {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .cmd-palette-search-icon {
+            width: 14px;
+            height: 14px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .cmd-palette-search-icon svg {
+            width: 14px;
+            height: 14px;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 2;
+        }
+
+        #cmd-palette-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            font-size: 14px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            color: var(--text-primary);
+            caret-color: var(--accent);
+        }
+
+        #cmd-palette-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        #cmd-palette-results {
+            overflow-y: auto;
+            max-height: 360px;
+            padding: 6px 0;
+        }
+
+        .cmd-result-section-label {
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 8px 16px 4px;
+        }
+
+        .cmd-result-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            cursor: pointer;
+            transition: background 0.1s ease;
+        }
+
+        .cmd-result-item:hover,
+        .cmd-result-item.focused {
+            background: var(--bg-secondary);
+        }
+
+        .cmd-result-icon {
+            width: 14px;
+            height: 14px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .cmd-result-icon svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .cmd-result-name {
+            flex: 1;
+            font-size: 13px;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .cmd-result-path {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 220px;
+        }
+
+        #cmd-palette-empty {
+            padding: 24px 16px;
+            text-align: center;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        #cmd-palette-footer {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 8px 16px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-secondary);
+            flex-shrink: 0;
+        }
+
+        .cmd-palette-hint {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .cmd-palette-hint kbd {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 9px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            border: 1px solid var(--border);
+            background: var(--bg-elevated);
+            color: var(--text-secondary);
+        }
+
+        /* ============================================================
+           THEME SWITCHER
+           ============================================================ */
+
+        #theme-switcher {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            font-family: 'IBM Plex Sans', sans-serif;
+            user-select: none;
+            flex-shrink: 0;
+        }
+
+        #theme-panel {
+            display: none;
+            position: absolute;
+            top: calc(100% + 6px);
+            right: 0;
+            z-index: 9999;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px;
+            min-width: 148px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+        }
+
+        #theme-panel.open {
+            display: block;
+        }
+
+        #theme-switcher-label {
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 2px 6px 6px;
+        }
+
+        .theme-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            padding: 5px 8px;
+            border-radius: 5px;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.1s ease, color 0.1s ease;
+        }
+
+        .theme-btn:hover {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .theme-btn.active {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .theme-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            border: 1px solid rgba(255,255,255,0.15);
+        }
+
+        .theme-swatch.swatch-observatory { background: #58a6ff; }
+        .theme-swatch.swatch-polar       { background: #0969da; }
+        .theme-swatch.swatch-amber       { background: #d4a017; }
+
+        #theme-gear-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            transition: color 0.15s ease, background 0.15s ease;
+        }
+
+        #theme-gear-btn:hover {
+            color: var(--text-secondary);
+            background: var(--bg-tertiary);
+        }
+
+        #theme-gear-btn svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        /* ============================================================
+           UTILITY CLASSES
+           ============================================================ */
+
+        .hidden {
+            display: none !important;
+        }
+
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .rule {
+            height: 1px;
+            background: var(--border-subtle);
+            margin: 16px 0;
+        }
+
     </style>
 </head>
 <body>
-    <header>
-        <h1>${escapeHtml(PRODUCT_NAME)}</h1>
-        <span class="header-sep">/</span>
-        <span class="project-name">
-            <span class="folder-icon"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg></span>
-            <span class="project-label">${projectName}</span>
-        </span>
+
+    <!-- HEADER -->
+    <header id="app-header">
+        <span class="header-wordmark">${escapeHtml(PRODUCT_NAME)}</span>
+        <span class="header-sep">&middot;</span>
+        <div class="header-project">
+            <span class="header-project-icon">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                </svg>
+            </span>
+            <span class="header-project-name" id="header-project-name">${projectName}</span>
+        </div>
+        <span class="header-stats" id="header-stats">&mdash; files &middot; &mdash; lang</span>
+        <div class="header-session hidden" id="header-session">
+            <span class="header-session-dot"></span>
+            <span id="header-session-count">0 changed</span>
+        </div>
+        <div class="header-spacer"></div>
+        <button id="cmd-palette-trigger" aria-label="Open command palette (Cmd+K)">
+            <span class="cmd-palette-trigger-label">Search files...</span>
+            <span class="cmd-palette-trigger-kbd">&#8984;K</span>
+        </button>
+        <nav id="theme-switcher" role="navigation" aria-label="Theme selector">
+            <div id="theme-panel" role="menu" aria-label="Available themes">
+                <div id="theme-switcher-label">Theme</div>
+                <button class="theme-btn active" data-theme-value="observatory" role="menuitem">
+                    <span class="theme-swatch swatch-observatory"></span>Observatory
+                </button>
+                <button class="theme-btn" data-theme-value="polar" role="menuitem">
+                    <span class="theme-swatch swatch-polar"></span>Polar
+                </button>
+                <button class="theme-btn" data-theme-value="amber" role="menuitem">
+                    <span class="theme-swatch swatch-amber"></span>Amber
+                </button>
+            </div>
+            <button id="theme-gear-btn" aria-label="Toggle theme selector" aria-expanded="false" aria-controls="theme-panel">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1112 8.4a3.6 3.6 0 010 7.2z"/>
+                </svg>
+            </button>
+        </nav>
     </header>
 
-    <div class="container">
-        <div class="panel tree-panel" id="treePanel">
-            <div class="tab-bar">
-                <div class="tab active" data-tab="code">Code</div>
-                <div class="tab" data-tab="all">All</div>
+    <!-- MAIN LAYOUT -->
+    <div id="app-container">
+
+        <!-- TREE PANEL -->
+        <div id="tree-panel" role="complementary" aria-label="File tree">
+            <div id="tree-toolbar">
+                <span class="tree-filter-label">View</span>
+                <div class="tree-filter-pills" role="group" aria-label="File filter">
+                    <button class="tree-filter-pill active" data-tree-mode="code" aria-pressed="true">Code</button>
+                    <button class="tree-filter-pill" data-tree-mode="all" aria-pressed="false">All</button>
+                </div>
+                <span class="tree-info-icon" style="margin-left: auto;" aria-label="Tree legend">?<span class="tree-info-tooltip" style="left: auto; right: 0; transform: none;"><b>View</b><br><b>Code</b> — indexed source files only<br><b>All</b> — all project files<br><br><b>Index Status</b><br><span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent-green);opacity:0.35;vertical-align:middle;margin-right:4px"></span> unchanged<br><span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent-warm);vertical-align:middle;margin-right:4px"></span> modified<br><span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent);vertical-align:middle;margin-right:4px"></span> new<br><br><b>Git Status</b><br><span style="display:inline-block;width:6px;height:6px;border-radius:1px;transform:rotate(45deg);background:var(--accent-green);vertical-align:middle;margin-right:4px"></span> pushed<br><span style="display:inline-block;width:6px;height:6px;border-radius:1px;transform:rotate(45deg);background:var(--accent);vertical-align:middle;margin-right:4px"></span> committed<br><span style="display:inline-block;width:6px;height:6px;border-radius:1px;transform:rotate(45deg);background:var(--accent-warm);vertical-align:middle;margin-right:4px"></span> modified<br><span style="display:inline-block;width:6px;height:6px;border-radius:1px;transform:rotate(45deg);background:var(--text-muted);opacity:0.5;vertical-align:middle;margin-right:4px"></span> untracked<br><br><b>Badges</b><br><span style="color:var(--accent)">m</span> — methods &nbsp; <span style="color:var(--accent-purple)">t</span> — types</span></span>
             </div>
-            <div class="panel-content" id="tree">
-                <div class="loading">Loading project tree...</div>
+            <div id="tree-scroll" role="tree" aria-label="Project files">
+                <div class="loading-state" id="tree-loading">
+                    <span class="loading-dot"></span>
+                    <span class="loading-dot"></span>
+                    <span class="loading-dot"></span>
+                    <span>Indexing project...</span>
+                </div>
+                <div id="tree-root"></div>
             </div>
         </div>
-        <div class="splitter" id="splitter"></div>
-        <div class="panel detail-panel">
-            <div class="tab-bar">
-                <div class="tab active" data-tab="overview">Overview</div>
-                <div class="tab" data-tab="source">Code</div>
-                <div class="tab" data-tab="tasks">Tasks</div>
+
+        <!-- SPLITTER -->
+        <div id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize panels"></div>
+
+        <!-- DETAIL PANEL -->
+        <div id="detail-panel" role="main">
+            <nav id="detail-tab-bar" role="tablist" aria-label="Detail view tabs">
+                <button class="detail-tab active" data-detail-tab="signatures" role="tab" aria-selected="true" aria-controls="signature-view">Signatures</button>
+                <button class="detail-tab" data-detail-tab="source" role="tab" aria-selected="false" aria-controls="source-view">Source</button>
+                <button class="detail-tab" data-detail-tab="tasks" role="tab" aria-selected="false" aria-controls="tasks-view">Tasks <span class="tab-badge" id="tasks-badge">0</span></button>
+                <div class="tab-bar-spacer"></div>
+                <div class="tab-bar-context hidden" id="tab-bar-file-context">
+                    <span class="breadcrumb-dir" id="ctx-file-dir"></span>
+                    <span class="context-sep">/</span>
+                    <span class="context-filename" id="ctx-file-name"></span>
+                </div>
+            </nav>
+
+            <div id="file-header-bar" class="hidden">
+                <div class="file-breadcrumb" id="file-breadcrumb"></div>
+                <div class="file-stat-pills" id="file-stat-pills"></div>
             </div>
-            <div class="panel-content" id="detail">
-                <div class="empty-state">
-                    <p>Click on a file to view its signature</p>
+
+            <div id="detail-content">
+                <!-- Signatures View -->
+                <div class="detail-view active" id="signature-view" role="tabpanel">
+                    <div class="empty-state" id="sig-empty-state">
+                        <div class="empty-state-icon">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/>
+                            </svg>
+                        </div>
+                        <span class="empty-state-label">Select a file to inspect its signature</span>
+                        <span class="empty-state-hint">Methods, types, and header comments</span>
+                    </div>
+                    <div id="sig-content" class="hidden">
+                        <div class="sig-section" id="sig-header-section">
+                            <div class="sig-section-title">Header</div>
+                            <div class="sig-header-comment" id="sig-header-comment"></div>
+                        </div>
+                        <div class="sig-section" id="sig-types-section">
+                            <div class="sig-section-title">Types</div>
+                            <ul class="sig-type-list" id="sig-type-list"></ul>
+                        </div>
+                        <div class="sig-section" id="sig-methods-section">
+                            <div class="sig-section-title">Methods</div>
+                            <ul class="sig-method-list" id="sig-method-list"></ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Source View -->
+                <div class="detail-view" id="source-view" role="tabpanel">
+                    <div class="empty-state" id="src-empty-state">
+                        <div class="empty-state-icon">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/>
+                            </svg>
+                        </div>
+                        <span class="empty-state-label">No file selected</span>
+                        <span class="empty-state-hint">Click a file in the tree to view source</span>
+                    </div>
+                    <div class="code-container hidden" id="src-code-container">
+                        <div class="source-line-numbers" id="src-line-numbers"></div>
+                        <pre><code id="src-code-block"></code></pre>
+                    </div>
+                </div>
+
+                <!-- Tasks View -->
+                <div class="detail-view" id="tasks-view" role="tabpanel">
+                    <div id="tasks-filter-bar">
+                        <span class="tasks-filter-label">Group by</span>
+                        <div class="tasks-group-toggle" role="group" aria-label="Task grouping">
+                            <button class="tasks-group-btn active" data-tasks-group="status" aria-pressed="true">Status</button>
+                            <button class="tasks-group-btn" data-tasks-group="tag" aria-pressed="false">Tag</button>
+                        </div>
+                    </div>
+                    <div class="empty-state hidden" id="tasks-empty-state">
+                        <div class="empty-state-icon">
+                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                            </svg>
+                        </div>
+                        <span class="empty-state-label">No tasks yet</span>
+                        <span class="empty-state-hint">Create tasks with chronicle_task</span>
+                    </div>
+                    <div id="tasks-active-section" class="hidden">
+                        <div class="task-section-label">Active</div>
+                        <ul class="task-list" id="tasks-active-list"></ul>
+                    </div>
+                    <div id="tasks-backlog-section" class="hidden">
+                        <div class="task-section-label">Backlog</div>
+                        <ul class="task-list" id="tasks-backlog-list"></ul>
+                    </div>
+                    <div id="tasks-done-section" class="hidden">
+                        <div class="task-done-toggle" id="task-done-toggle" role="button" aria-expanded="false">Completed</div>
+                        <div class="task-done-list collapsed" id="tasks-done-list-wrap">
+                            <ul class="task-list" id="tasks-done-list"></ul>
+                        </div>
+                    </div>
+                    <div id="tasks-cancelled-section" class="hidden">
+                        <div class="task-done-toggle" id="task-cancelled-toggle" role="button" aria-expanded="false">Cancelled</div>
+                        <div class="task-done-list collapsed" id="tasks-cancelled-list-wrap">
+                            <ul class="task-list" id="tasks-cancelled-list"></ul>
+                        </div>
+                    </div>
+                    <div id="tasks-tag-view" class="hidden"></div>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- COMMAND PALETTE OVERLAY -->
+    <div id="cmd-palette-overlay" class="hidden" role="dialog" aria-modal="true" aria-label="Command palette">
+        <div id="cmd-palette">
+            <div id="cmd-palette-input-wrap">
+                <span class="cmd-palette-search-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="11" cy="11" r="8"/>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                </span>
+                <input type="text" id="cmd-palette-input" placeholder="Search files, methods, types..." autocomplete="off" spellcheck="false" aria-label="Search" aria-autocomplete="list" aria-controls="cmd-palette-results" />
+            </div>
+            <div id="cmd-palette-results" role="listbox" aria-label="Search results">
+                <div id="cmd-palette-empty" class="hidden">No results found</div>
+            </div>
+            <div id="cmd-palette-footer" aria-hidden="true">
+                <div class="cmd-palette-hint"><kbd>Return</kbd><span>open</span></div>
+                <div class="cmd-palette-hint"><kbd>Esc</kbd><span>close</span></div>
+                <div class="cmd-palette-hint"><kbd>Up</kbd><kbd>Down</kbd><span>navigate</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Old theme switcher removed — now in header -->
+
+    <!-- JAVASCRIPT -->
     <script>
-        const ws = new WebSocket('ws://localhost:${PORT}');
-        let selectedNode = null;
-        let currentFile = null;
-        let currentTreeMode = 'code';
-        let currentDetailTab = 'overview';
-        let cachedSignature = null;
-        let cachedContent = null;
-        let cachedTasks = null;
+    (function() {
+        // ── State ──
+        var ws = null;
+        var selectedFile = null;
+        var treeData = null;
+        var allTreeData = null;
+        var codeTreeData = null;
+        var currentTreeMode = 'code';
+        var currentTab = 'signatures';
+        var allFiles = [];
+        var expandedDirs = {};
 
-        ws.onopen = () => {
-            console.log('Connected to Chronicle Viewer');
-        };
-
-        let cachedCodeTree = null;
-        let cachedAllTree = null;
-
-        ws.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
-            console.log('📨 Received:', msg.type, msg);
-
-            if (msg.type === 'tree') {
-                // Cache the tree for the mode
-                if (msg.mode === 'code') cachedCodeTree = msg.data;
-                else cachedAllTree = msg.data;
-                renderTree(msg.data);
-            } else if (msg.type === 'refresh') {
-                // Live reload: update cached trees and re-render current mode
-                console.log('🔄 Live reload triggered');
-                cachedCodeTree = msg.codeTree;
-                cachedAllTree = msg.allTree;
-                const treeToRender = currentTreeMode === 'code' ? cachedCodeTree : cachedAllTree;
-                if (treeToRender) renderTree(treeToRender);
-            } else if (msg.type === 'signature') {
-                cachedSignature = { file: msg.file, data: msg.data };
-                if (currentDetailTab === 'overview') {
-                    renderSignature(msg.file, msg.data);
-                }
-            } else if (msg.type === 'fileContent') {
-                cachedContent = { file: msg.file, data: msg.data };
-                if (currentDetailTab === 'source') {
-                    renderFileContent(msg.file, msg.data);
-                }
-            } else if (msg.type === 'tasks') {
-                cachedTasks = msg.data;
-                if (currentDetailTab === 'tasks') {
-                    renderTasks(msg.data);
-                }
-            }
-        };
-
-        // Tab switching - Tree panel
-        document.querySelectorAll('.tree-panel .tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.tree-panel .tab').forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-                currentTreeMode = tab.dataset.tab;
-                document.getElementById('tree').innerHTML = '<div class="loading">Loading...</div>';
-                ws.send(JSON.stringify({ type: 'getTree', mode: currentTreeMode }));
-            });
-        });
-
-        // Tab switching - Detail panel
-        document.querySelectorAll('.detail-panel .tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                // Tasks tab works without file selection
-                if (!currentFile && tab.dataset.tab !== 'tasks') return;
-
-                document.querySelectorAll('.detail-panel .tab').forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-                currentDetailTab = tab.dataset.tab;
-
-                if (currentDetailTab === 'overview') {
-                    if (cachedSignature && cachedSignature.file === currentFile) {
-                        renderSignature(cachedSignature.file, cachedSignature.data);
-                    } else {
-                        ws.send(JSON.stringify({ type: 'getSignature', file: currentFile }));
-                    }
-                } else if (currentDetailTab === 'source') {
-                    if (cachedContent && cachedContent.file === currentFile) {
-                        renderFileContent(cachedContent.file, cachedContent.data);
-                    } else {
-                        document.getElementById('detail').innerHTML = '<div class="loading">Loading source...</div>';
-                        ws.send(JSON.stringify({ type: 'getFileContent', file: currentFile }));
-                    }
-                } else if (currentDetailTab === 'tasks') {
-                    if (cachedTasks) {
-                        renderTasks(cachedTasks);
-                    } else {
-                        document.getElementById('detail').innerHTML = '<div class="loading">Loading tasks...</div>';
-                        ws.send(JSON.stringify({ type: 'getTasks' }));
-                    }
-                }
-            });
-        });
-
-        function renderTree(node, container = document.getElementById('tree'), depth = 0) {
-            if (depth === 0) {
-                container.innerHTML = '';
-            }
-
-            const div = document.createElement('div');
-            div.className = 'tree-node ' + node.type + (node.fileType ? ' ' + node.fileType : '');
-            div.style.paddingLeft = (depth * 20 + 10) + 'px';
-            div.dataset.path = node.path;
-            div.dataset.type = node.type;
-
-            // Status icon (modified/new/unchanged)
-            const statusIcon = document.createElement('span');
-            statusIcon.className = 'status-icon';
-            if (node.status === 'modified') {
-                statusIcon.className += ' modified';
-                statusIcon.textContent = '✏️';
-                statusIcon.title = 'Modified in this session';
-            } else if (node.status === 'new') {
-                statusIcon.className += ' new';
-                statusIcon.textContent = '➕';
-                statusIcon.title = 'New in this session';
-            } else if (node.status === 'unchanged') {
-                statusIcon.className += ' unchanged';
-                statusIcon.textContent = '✓';
-                statusIcon.title = 'Unchanged';
-            }
-            div.appendChild(statusIcon);
-
-            // Git status diamond icon (only for files in git repos)
-            if (node.gitStatus) {
-                const gitStatus = document.createElement('span');
-                gitStatus.className = 'git-status ' + node.gitStatus;
-                // Filled diamond SVG
-                gitStatus.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2L2 12l10 10 10-10L12 2z"/></svg>';
-                const gitTitles = {
-                    'untracked': 'Untracked - not in git',
-                    'modified': 'Modified - not committed',
-                    'committed': 'Committed - not pushed',
-                    'pushed': 'Pushed - in sync with remote'
-                };
-                gitStatus.title = gitTitles[node.gitStatus] || node.gitStatus;
-                div.appendChild(gitStatus);
-            }
-
-            // File/folder icon
-            const icon = document.createElement('span');
-            icon.className = 'icon';
-            if (node.type === 'dir') {
-                icon.textContent = '📁';
-            } else {
-                // Different icons for different file types
-                const iconMap = {
-                    'code': '📄',
-                    'config': '⚙️',
-                    'doc': '📝',
-                    'test': '🧪',
-                    'asset': '🖼️',
-                    'other': '📄'
-                };
-                icon.textContent = iconMap[node.fileType] || '📄';
-            }
-
-            const name = document.createElement('span');
-            name.className = 'name';
-            name.textContent = node.name;
-
-            div.appendChild(icon);
-            div.appendChild(name);
-
-            if (node.stats && (node.stats.methods > 0 || node.stats.types > 0)) {
-                const stats = document.createElement('span');
-                stats.className = 'stats';
-                stats.textContent = node.stats.methods + 'm ' + node.stats.types + 't';
-                div.appendChild(stats);
-            }
-
-            div.onclick = (e) => {
-                e.stopPropagation();
-
-                if (node.type === 'dir') {
-                    const children = div.nextElementSibling;
-                    if (children && children.classList.contains('tree-children')) {
-                        children.classList.toggle('collapsed');
-                        icon.textContent = children.classList.contains('collapsed') ? '📁' : '📂';
-                    }
-                } else {
-                    if (selectedNode) selectedNode.classList.remove('selected');
-                    div.classList.add('selected');
-                    selectedNode = div;
-                    currentFile = node.path;
-                    cachedSignature = null;
-                    cachedContent = null;
-
-                    // Reset to overview tab
-                    currentDetailTab = 'overview';
-                    document.querySelectorAll('.detail-panel .tab').forEach(t => t.classList.remove('active'));
-                    document.querySelector('.detail-panel .tab[data-tab="overview"]').classList.add('active');
-
-                    ws.send(JSON.stringify({ type: 'getSignature', file: node.path }));
-                }
-            };
-
-            container.appendChild(div);
-
-            if (node.children && node.children.length > 0) {
-                const childContainer = document.createElement('div');
-                childContainer.className = 'tree-children';
-                container.appendChild(childContainer);
-
-                for (const child of node.children) {
-                    renderTree(child, childContainer, depth + 1);
-                }
-            }
+        // ── Utility ──
+        function esc(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                      .replace(/"/g, '&quot;').replace(/\\'/g, '&#39;');
         }
 
-        function renderSignature(filePath, data) {
-            const detail = document.getElementById('detail');
-
-            if (data.error) {
-                detail.innerHTML = '<div class="empty-state">' + data.error + '</div>';
-                return;
-            }
-
-            let html = '<h2>' + filePath.split('/').pop() + '</h2>';
-            html += '<div class="file-path">' + filePath + '</div>';
-
-            if (data.header) {
-                html += '<div class="section"><h3>Header Comments</h3>';
-                html += '<div class="header-comment">' + escapeHtml(data.header) + '</div></div>';
-            }
-
-            if (data.types && data.types.length > 0) {
-                html += '<div class="section"><h3>Types (' + data.types.length + ')</h3>';
-                html += '<ul class="type-list">';
-                for (const t of data.types) {
-                    html += '<li><span class="line-num">:' + t.line + '</span>';
-                    html += '<span class="kind">' + t.kind + '</span>';
-                    html += '<span>' + escapeHtml(t.name) + '</span></li>';
-                }
-                html += '</ul></div>';
-            }
-
-            if (data.methods && data.methods.length > 0) {
-                html += '<div class="section"><h3>Methods (' + data.methods.length + ')</h3>';
-                html += '<ul class="method-list">';
-                for (const m of data.methods) {
-                    html += '<li><span class="line-num">:' + m.line + '</span>';
-                    if (m.visibility) html += '<span class="visibility">' + m.visibility + '</span>';
-                    if (m.static) html += '<span class="modifier">static</span>';
-                    if (m.async) html += '<span class="modifier">async</span>';
-                    html += '<span>' + escapeHtml(m.prototype) + '</span></li>';
-                }
-                html += '</ul></div>';
-            }
-
-            if (!data.header && (!data.types || data.types.length === 0) && (!data.methods || data.methods.length === 0)) {
-                html += '<div class="empty-state">No signature data for this file</div>';
-            }
-
-            detail.innerHTML = html;
+        // ── WebSocket ──
+        function connect() {
+            ws = new WebSocket('ws://' + location.host);
+            ws.onopen = function() { console.log('[Chronicle] Connected'); };
+            ws.onclose = function() { setTimeout(connect, 1000); };
+            ws.onmessage = function(e) { handleMessage(JSON.parse(e.data)); };
         }
 
-        function renderFileContent(filePath, data) {
-            const detail = document.getElementById('detail');
-
-            if (data.error) {
-                detail.innerHTML = '<div class="empty-state">' + data.error + '</div>';
-                return;
-            }
-
-            let html = '<h2>' + filePath.split('/').pop() + '</h2>';
-            html += '<div class="file-path">' + filePath + '</div>';
-            html += '<div class="code-view"><pre><code class="language-' + data.language + '">' + escapeHtml(data.content) + '</code></pre></div>';
-
-            detail.innerHTML = html;
-
-            // Apply syntax highlighting
-            detail.querySelectorAll('pre code').forEach((block) => {
-                hljs.highlightElement(block);
-            });
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        let taskGroupMode = localStorage.getItem('chronicle-task-group') || 'status';
-
-        function setTaskGroupMode(mode) {
-            taskGroupMode = mode;
-            localStorage.setItem('chronicle-task-group', mode);
-            if (cachedTasks) renderTasks(cachedTasks);
-        }
-
-        function renderTasks(taskList) {
-            const detail = document.getElementById('detail');
-            const priorityIcon = { 1: '\\u{1F534}', 2: '\\u{1F7E1}', 3: '\\u26AA' };
-            const priorityLabel = { 1: 'High', 2: 'Medium', 3: 'Low' };
-
-            let html = '<h2 style="display:flex;align-items:center">Task Backlog (' + taskList.length + ')';
-            html += '<span class="task-group-toggle">';
-            html += '<button onclick="setTaskGroupMode(\\'status\\')" class="' + (taskGroupMode === 'status' ? 'active' : '') + '">Status</button>';
-            html += '<button onclick="setTaskGroupMode(\\'tags\\')" class="' + (taskGroupMode === 'tags' ? 'active' : '') + '">Tags</button>';
-            html += '</span></h2>';
-
-            if (taskList.length === 0) {
-                html += '<div class="empty-state"><p>No tasks yet.</p><p style="margin-top:8px;font-size:0.9em">Use <code>chronicle_task</code> to create tasks from the chat.</p></div>';
-                detail.innerHTML = html;
-                return;
-            }
-
-            if (taskGroupMode === 'tags') {
-                html += renderTasksByTags(taskList, priorityIcon, priorityLabel);
-            } else {
-                html += renderTasksByStatus(taskList, priorityIcon, priorityLabel);
-            }
-
-            detail.innerHTML = html;
-        }
-
-        function renderTasksByStatus(taskList, priorityIcon, priorityLabel) {
-            const active = taskList.filter(t => t.status === 'active');
-            const backlog = taskList.filter(t => t.status === 'backlog');
-            const done = taskList.filter(t => t.status === 'done');
-            const cancelled = taskList.filter(t => t.status === 'cancelled');
-
-            let html = '';
-
-            if (active.length > 0) {
-                html += '<div class="task-section-header">Active (' + active.length + ')</div>';
-                html += '<ul class="task-list">';
-                for (const t of active) html += renderTaskItem(t, priorityIcon, priorityLabel);
-                html += '</ul>';
-            }
-
-            if (backlog.length > 0) {
-                html += '<div class="task-section-header">Backlog (' + backlog.length + ')</div>';
-                html += '<ul class="task-list">';
-                for (const t of backlog) html += renderTaskItem(t, priorityIcon, priorityLabel);
-                html += '</ul>';
-            }
-
-            if (done.length > 0) {
-                html += '<div class="task-done-toggle" onclick="var el=this.nextElementSibling;el.classList.toggle(\\'collapsed\\');this.textContent=el.classList.contains(\\'collapsed\\')?\\'\u2705 Done (' + done.length + ') \u25B8\\':\\'\u2705 Done (' + done.length + ') \u25BE\\'">\\u2705 Done (' + done.length + ') \\u25B8</div>';
-                html += '<ul class="task-list task-done-list collapsed">';
-                for (const t of done) html += renderTaskItem(t, priorityIcon, priorityLabel);
-                html += '</ul>';
-            }
-
-            if (cancelled.length > 0) {
-                html += '<div class="task-done-toggle" onclick="var el=this.nextElementSibling;el.classList.toggle(\\'collapsed\\');this.textContent=el.classList.contains(\\'collapsed\\')?\\'\u274C Cancelled (' + cancelled.length + ') \u25B8\\':\\'\u274C Cancelled (' + cancelled.length + ') \u25BE\\'">\\u274C Cancelled (' + cancelled.length + ') \\u25B8</div>';
-                html += '<ul class="task-list task-done-list collapsed">';
-                for (const t of cancelled) html += renderTaskItem(t, priorityIcon, priorityLabel);
-                html += '</ul>';
-            }
-
-            return html;
-        }
-
-        const tagIcons = { marketing: '\\u{1F4E3}', release: '\\u{1F4E6}', docs: '\\u{1F4C4}', viewer: '\\u{1F5A5}', test: '\\u{1F9EA}', bug: '\\u{1F41B}', feature: '\\u2728', social: '\\u{1F310}', content: '\\u270D\\uFE0F', github: '\\u{1F4BB}' };
-
-        function renderTasksByTags(taskList, priorityIcon, priorityLabel) {
-            const groups = {};
-            const statusOrder = { active: 0, backlog: 1, done: 2, cancelled: 3 };
-
-            for (const t of taskList) {
-                const firstTag = t.tags ? t.tags.split(',')[0].trim() : 'ungrouped';
-                if (!groups[firstTag]) groups[firstTag] = [];
-                groups[firstTag].push(t);
-            }
-
-            // Sort groups: by number of active/backlog tasks descending
-            const sortedTags = Object.keys(groups).sort((a, b) => {
-                if (a === 'ungrouped') return 1;
-                if (b === 'ungrouped') return -1;
-                const aActive = groups[a].filter(t => t.status === 'active' || t.status === 'backlog').length;
-                const bActive = groups[b].filter(t => t.status === 'active' || t.status === 'backlog').length;
-                return bActive - aActive;
-            });
-
-            let html = '';
-            for (const tag of sortedTags) {
-                const tasks = groups[tag];
-                // Sort within group: status then priority
-                tasks.sort((a, b) => (statusOrder[a.status] - statusOrder[b.status]) || (a.priority - b.priority));
-
-                const openCount = tasks.filter(t => t.status === 'active' || t.status === 'backlog').length;
-                const doneCount = tasks.length - openCount;
-                const icon = tagIcons[tag] || '\\u{1F3F7}\\uFE0F';
-                const collapsed = openCount === 0 ? ' collapsed' : '';
-
-                html += '<div class="task-tag-group' + collapsed + '">';
-                html += '<div class="task-tag-group-header" onclick="this.parentElement.classList.toggle(\\'collapsed\\')">';
-                html += icon + ' ' + escapeHtml(tag) + ' (' + openCount + (doneCount > 0 ? '+' + doneCount : '') + ') ';
-                html += (collapsed ? '\\u25B8' : '\\u25BE');
-                html += '</div>';
-                html += '<ul class="task-list">';
-                for (const t of tasks) html += renderTaskItem(t, priorityIcon, priorityLabel, true);
-                html += '</ul>';
-                html += '</div>';
-            }
-
-            return html;
-        }
-
-        function renderTaskItem(t, priorityIcon, priorityLabel, showStatus) {
-            let html = '<li class="task-item priority-' + t.priority + ' status-' + t.status + '">';
-            html += '<div class="task-title">' + (priorityIcon[t.priority] || '') + ' #' + t.id + ' ' + escapeHtml(t.title);
-            if (showStatus) html += '<span class="task-status-badge status-' + t.status + '">' + t.status + '</span>';
-            html += '</div>';
-            if (t.description) {
-                html += '<div class="task-description">' + escapeHtml(t.description) + '</div>';
-            }
-            const meta = [];
-            meta.push(priorityLabel[t.priority] || 'Medium');
-            if (t.source) meta.push('Source: ' + escapeHtml(t.source));
-            const created = new Date(t.created_at);
-            meta.push(created.toLocaleDateString() + ' ' + created.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
-            if (t.completed_at) {
-                const completed = new Date(t.completed_at);
-                meta.push('Done: ' + completed.toLocaleDateString());
-            }
-            html += '<div class="task-meta">' + meta.map(m => '<span>' + m + '</span>').join('') + '</div>';
-            if (t.tags) {
-                html += '<div class="task-tags">' + t.tags.split(',').map(s => '#' + escapeHtml(s.trim())).join(' ') + '</div>';
-            }
-            if (t.status !== 'done' && t.status !== 'cancelled') {
-                html += '<div class="task-actions">';
-                html += '<button class="task-btn task-btn-done" onclick="updateTaskStatus(' + t.id + ', \\'done\\')">\\u2705 Done</button>';
-                html += '<button class="task-btn task-btn-cancel" onclick="updateTaskStatus(' + t.id + ', \\'cancelled\\')">\\u274C Cancel</button>';
-                html += '</div>';
-            }
-            html += '</li>';
-            return html;
-        }
-
-        function updateTaskStatus(taskId, status) {
+        function send(msg) {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'updateTaskStatus', taskId: taskId, status: status }));
+                ws.send(JSON.stringify(msg));
             }
         }
 
-        // Splitter functionality
-        const splitter = document.getElementById('splitter');
-        const treePanel = document.getElementById('treePanel');
-        let isDragging = false;
-
-        splitter.addEventListener('mousedown', (e) => {
-            isDragging = true;
-            splitter.classList.add('dragging');
-            document.body.style.cursor = 'col-resize';
-            document.body.style.userSelect = 'none';
-        });
-
-        document.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const containerRect = document.querySelector('.container').getBoundingClientRect();
-            const newWidth = e.clientX - containerRect.left;
-            if (newWidth >= 200 && newWidth <= 800) {
-                treePanel.style.width = newWidth + 'px';
+        function handleMessage(msg) {
+            if (msg.type === 'tree') {
+                if (msg.mode === 'code') codeTreeData = msg.data;
+                else allTreeData = msg.data;
+                if (msg.mode === currentTreeMode) {
+                    treeData = msg.data;
+                    renderTree(msg.data);
+                    updateHeaderStats(msg.data);
+                }
+            } else if (msg.type === 'refresh') {
+                codeTreeData = msg.codeTree;
+                allTreeData = msg.allTree;
+                treeData = currentTreeMode === 'code' ? codeTreeData : allTreeData;
+                renderTree(treeData);
+                updateHeaderStats(treeData);
+                if (selectedFile) {
+                    send({ type: 'getSignature', file: selectedFile });
+                    send({ type: 'getFileContent', file: selectedFile });
+                }
+            } else if (msg.type === 'signature') {
+                renderSignature(msg.data, msg.file);
+            } else if (msg.type === 'fileContent') {
+                renderSource(msg.data, msg.file);
+            } else if (msg.type === 'tasks') {
+                renderTasks(msg.data);
             }
-        });
+        }
 
-        document.addEventListener('mouseup', () => {
-            if (isDragging) {
+        // ── Header Stats ──
+        function updateHeaderStats(tree) {
+            if (!tree) return;
+            var fileCount = 0;
+            var langs = {};
+            function count(node) {
+                if (node.type === 'file') {
+                    fileCount++;
+                    var ext = node.name.split('.').pop();
+                    if (ext) langs[ext] = true;
+                }
+                if (node.children) node.children.forEach(count);
+            }
+            count(tree);
+            var el = document.getElementById('header-stats');
+            if (el) el.textContent = fileCount + ' files \\u00b7 ' + Object.keys(langs).length + ' lang';
+
+            var changedCount = 0;
+            function countChanged(node) {
+                if (node.type === 'file' && (node.status === 'modified' || node.status === 'new')) changedCount++;
+                if (node.children) node.children.forEach(countChanged);
+            }
+            countChanged(tree);
+
+            var sessionEl = document.getElementById('header-session');
+            var countEl = document.getElementById('header-session-count');
+            if (sessionEl && countEl) {
+                if (changedCount > 0) {
+                    sessionEl.classList.remove('hidden');
+                    countEl.textContent = changedCount + ' changed';
+                } else {
+                    sessionEl.classList.add('hidden');
+                }
+            }
+        }
+
+        // ── Tree ──
+        function collectFiles(node, files) {
+            if (node.type === 'file') files.push(node);
+            if (node.children) node.children.forEach(function(c) { collectFiles(c, files); });
+        }
+
+        function renderTree(data) {
+            if (!data) return;
+            var root = document.getElementById('tree-root');
+            var loading = document.getElementById('tree-loading');
+            if (loading) loading.classList.add('hidden');
+            if (!root) return;
+
+            allFiles = [];
+            collectFiles(data, allFiles);
+
+            root.innerHTML = '';
+            if (data.children) {
+                data.children.forEach(function(child) { renderTreeNode(child, root, 0); });
+            }
+        }
+
+        function renderTreeNode(node, parent, depth) {
+            var el = document.createElement('div');
+            el.className = 'tree-node ' + node.type + (selectedFile === node.path ? ' selected' : '');
+            el.setAttribute('data-path', node.path);
+
+            // Indent
+            var indent = document.createElement('span');
+            indent.className = 'tree-indent';
+            indent.style.width = (depth * 16 + 8) + 'px';
+            el.appendChild(indent);
+
+            // Toggle
+            var toggle = document.createElement('span');
+            if (node.type === 'dir') {
+                var isOpen = expandedDirs[node.path];
+                toggle.className = 'tree-toggle ' + (isOpen ? 'is-open' : 'is-closed');
+            } else {
+                toggle.className = 'tree-toggle leaf';
+            }
+            el.appendChild(toggle);
+
+            // Status dot
+            var statusDot = document.createElement('span');
+            if (node.type === 'file' && node.status) {
+                statusDot.className = 'tree-status-dot status-' + node.status;
+            } else {
+                statusDot.className = 'tree-status-dot no-dot';
+            }
+            el.appendChild(statusDot);
+
+            // Git dot
+            if (node.type === 'file' && node.gitStatus) {
+                var gitDot = document.createElement('span');
+                gitDot.className = 'tree-git-dot git-' + node.gitStatus;
+                gitDot.title = node.gitStatus;
+                el.appendChild(gitDot);
+            }
+
+            // Label
+            var label = document.createElement('span');
+            label.className = 'tree-label';
+            label.textContent = node.name;
+            el.appendChild(label);
+
+            // Stats badges
+            if (node.type === 'file' && node.stats && (node.stats.methods > 0 || node.stats.types > 0)) {
+                var badgeWrap = document.createElement('span');
+                badgeWrap.className = 'tree-badges';
+                if (node.stats.methods > 0) {
+                    var mb = document.createElement('span');
+                    mb.className = 'tree-badge tree-badge-m';
+                    mb.textContent = node.stats.methods + 'm';
+                    mb.title = node.stats.methods + (node.stats.methods === 1 ? ' method' : ' methods');
+                    badgeWrap.appendChild(mb);
+                }
+                if (node.stats.types > 0) {
+                    var tb = document.createElement('span');
+                    tb.className = 'tree-badge tree-badge-t';
+                    tb.textContent = node.stats.types + 't';
+                    tb.title = node.stats.types + (node.stats.types === 1 ? ' type' : ' types');
+                    badgeWrap.appendChild(tb);
+                }
+                el.appendChild(badgeWrap);
+            }
+
+            el.addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (node.type === 'dir') {
+                    if (expandedDirs[node.path]) {
+                        delete expandedDirs[node.path];
+                    } else {
+                        expandedDirs[node.path] = true;
+                    }
+                    renderTree(treeData);
+                } else {
+                    selectFile(node.path);
+                }
+            });
+
+            parent.appendChild(el);
+
+            // Children
+            if (node.type === 'dir' && node.children) {
+                var childContainer = document.createElement('div');
+                childContainer.className = 'tree-children' + (expandedDirs[node.path] ? '' : ' collapsed');
+                node.children.forEach(function(child) { renderTreeNode(child, childContainer, depth + 1); });
+                parent.appendChild(childContainer);
+            }
+        }
+
+        function selectFile(filePath) {
+            selectedFile = filePath;
+
+            // Update tree selection
+            document.querySelectorAll('.tree-node.selected').forEach(function(n) { n.classList.remove('selected'); });
+            var sel = document.querySelector('.tree-node[data-path="' + filePath.replace(/"/g, '\\\\"') + '"]');
+            if (sel) sel.classList.add('selected');
+
+            // Update tab bar context
+            var ctxWrap = document.getElementById('tab-bar-file-context');
+            var ctxDir = document.getElementById('ctx-file-dir');
+            var ctxName = document.getElementById('ctx-file-name');
+            if (ctxWrap && ctxDir && ctxName) {
+                var fp = filePath.split('/');
+                var fn = fp.pop();
+                ctxDir.textContent = fp.join('/');
+                ctxName.textContent = fn;
+                ctxWrap.classList.remove('hidden');
+            }
+
+            // Show file header bar
+            var headerBar = document.getElementById('file-header-bar');
+            var breadcrumb = document.getElementById('file-breadcrumb');
+            if (headerBar && breadcrumb) {
+                var parts = filePath.split('/');
+                var fileName = parts.pop();
+                var dir = parts.join('/');
+                breadcrumb.innerHTML = '';
+                if (dir) {
+                    var dirSpan = document.createElement('span');
+                    dirSpan.className = 'breadcrumb-dir';
+                    dirSpan.textContent = dir;
+                    breadcrumb.appendChild(dirSpan);
+                    var sep = document.createElement('span');
+                    sep.className = 'breadcrumb-sep';
+                    sep.textContent = '/';
+                    breadcrumb.appendChild(sep);
+                }
+                var fileSpan = document.createElement('span');
+                fileSpan.className = 'breadcrumb-file';
+                fileSpan.textContent = fileName;
+                breadcrumb.appendChild(fileSpan);
+                headerBar.classList.remove('hidden');
+            }
+
+            // Switch to signatures tab when file selected
+            switchTab('signatures');
+
+            // Request data
+            send({ type: 'getSignature', file: filePath });
+            send({ type: 'getFileContent', file: filePath });
+        }
+
+        // ── Signature ──
+        function renderSignature(data, filePath) {
+            var emptyState = document.getElementById('sig-empty-state');
+            var content = document.getElementById('sig-content');
+            if (!content || !emptyState) return;
+
+            if (data.error) {
+                emptyState.querySelector('.empty-state-label').textContent = data.error;
+                emptyState.classList.remove('hidden');
+                content.classList.add('hidden');
+                return;
+            }
+
+            emptyState.classList.add('hidden');
+            content.classList.remove('hidden');
+
+            // Header
+            var headerSection = document.getElementById('sig-header-section');
+            var headerComment = document.getElementById('sig-header-comment');
+            if (headerSection && headerComment) {
+                if (data.header) {
+                    headerComment.textContent = data.header;
+                    headerSection.classList.remove('hidden');
+                } else {
+                    headerSection.classList.add('hidden');
+                }
+            }
+
+            // Types
+            var typesSection = document.getElementById('sig-types-section');
+            var typeList = document.getElementById('sig-type-list');
+            if (typesSection && typeList) {
+                typeList.innerHTML = '';
+                if (data.types && data.types.length > 0) {
+                    data.types.forEach(function(t) {
+                        var li = document.createElement('li');
+                        li.className = 'sig-type-item';
+                        li.innerHTML = '<span class="sig-type-line">' + t.line + '</span>' +
+                            '<span class="sig-type-kind">' + esc(t.kind) + '</span>' +
+                            '<span class="sig-type-name">' + esc(t.name) + '</span>';
+                        li.style.cursor = 'pointer';
+                        li.addEventListener('click', function() {
+                            switchTab('source');
+                            setTimeout(function() { scrollToLine(t.line); }, 100);
+                        });
+                        typeList.appendChild(li);
+                    });
+                    typesSection.classList.remove('hidden');
+                } else {
+                    typesSection.classList.add('hidden');
+                }
+            }
+
+            // Methods
+            var methodsSection = document.getElementById('sig-methods-section');
+            var methodList = document.getElementById('sig-method-list');
+            if (methodsSection && methodList) {
+                methodList.innerHTML = '';
+                if (data.methods && data.methods.length > 0) {
+                    data.methods.forEach(function(m) {
+                        var li = document.createElement('li');
+                        li.className = 'sig-method-item';
+                        var html = '<span class="sig-method-line">' + m.line + '</span>';
+                        if (m.visibility && m.visibility !== 'public') {
+                            html += '<span class="sig-method-visibility">' + esc(m.visibility) + '</span>';
+                        }
+                        if (m.static) html += '<span class="sig-method-modifier">static</span>';
+                        if (m.async) html += '<span class="sig-method-modifier">async</span>';
+                        html += '<span class="sig-method-proto">' + esc(m.prototype) + '</span>';
+                        li.innerHTML = html;
+                        li.style.cursor = 'pointer';
+                        li.addEventListener('click', function() {
+                            switchTab('source');
+                            setTimeout(function() { scrollToLine(m.line); }, 100);
+                        });
+                        methodList.appendChild(li);
+                    });
+                    methodsSection.classList.remove('hidden');
+                } else {
+                    methodsSection.classList.add('hidden');
+                }
+            }
+
+            // Stat pills
+            var pills = document.getElementById('file-stat-pills');
+            if (pills) {
+                pills.innerHTML = '';
+                if (data.methods && data.methods.length > 0) {
+                    var mp = document.createElement('span');
+                    mp.className = 'file-stat-pill methods';
+                    mp.textContent = data.methods.length + 'm';
+                    pills.appendChild(mp);
+                }
+                if (data.types && data.types.length > 0) {
+                    var tp = document.createElement('span');
+                    tp.className = 'file-stat-pill types';
+                    tp.textContent = data.types.length + 't';
+                    pills.appendChild(tp);
+                }
+            }
+        }
+
+        // ── Source ──
+        function renderSource(data, filePath) {
+            var emptyState = document.getElementById('src-empty-state');
+            var container = document.getElementById('src-code-container');
+            var codeBlock = document.getElementById('src-code-block');
+            if (!container || !codeBlock || !emptyState) return;
+
+            if (data.error) {
+                emptyState.querySelector('.empty-state-label').textContent = data.error;
+                emptyState.classList.remove('hidden');
+                container.classList.add('hidden');
+                return;
+            }
+
+            emptyState.classList.add('hidden');
+            container.classList.remove('hidden');
+            codeBlock.textContent = data.content;
+            codeBlock.removeAttribute('data-highlighted');
+            codeBlock.className = '';
+            if (data.language && data.language !== 'plaintext') {
+                codeBlock.className = 'language-' + data.language;
+            }
+            hljs.highlightElement(codeBlock);
+
+            // Generate line numbers
+            var lineNums = document.getElementById('src-line-numbers');
+            if (lineNums) {
+                var lineCount = (data.content || '').split('\\n').length;
+                var html = '';
+                for (var i = 1; i <= lineCount; i++) {
+                    html += '<span>' + i + '</span>';
+                }
+                lineNums.innerHTML = html;
+            }
+        }
+
+        function scrollToLine(lineNumber) {
+            var codeBlock = document.getElementById('src-code-block');
+            if (!codeBlock) return;
+            var lineHeight = 19.5;
+            var scrollTop = (lineNumber - 1) * lineHeight - 100;
+            var container = document.getElementById('src-code-container');
+            if (container) container.scrollTop = Math.max(0, scrollTop);
+        }
+
+        // ── Tasks ──
+        function renderTasks(tasks) {
+            if (!tasks) return;
+
+            var badge = document.getElementById('tasks-badge');
+            if (badge) {
+                var activeCount = tasks.filter(function(t) { return t.status === 'active' || t.status === 'backlog'; }).length;
+                badge.textContent = activeCount;
+            }
+
+            var emptyState = document.getElementById('tasks-empty-state');
+            var activeTasks = tasks.filter(function(t) { return t.status === 'active'; });
+            var backlogTasks = tasks.filter(function(t) { return t.status === 'backlog'; });
+            var doneTasks = tasks.filter(function(t) { return t.status === 'done'; });
+            var cancelledTasks = tasks.filter(function(t) { return t.status === 'cancelled'; });
+
+            if (emptyState) {
+                if (tasks.length > 0) emptyState.classList.add('hidden');
+                else emptyState.classList.remove('hidden');
+            }
+
+            renderTaskSection('tasks-active-section', 'tasks-active-list', activeTasks);
+            renderTaskSection('tasks-backlog-section', 'tasks-backlog-list', backlogTasks);
+            renderTaskSection('tasks-done-section', 'tasks-done-list', doneTasks);
+            renderTaskSection('tasks-cancelled-section', 'tasks-cancelled-list', cancelledTasks);
+        }
+
+        function renderTaskSection(sectionId, listId, tasks) {
+            var section = document.getElementById(sectionId);
+            var list = document.getElementById(listId);
+            if (!section || !list) return;
+
+            if (tasks.length === 0) {
+                section.classList.add('hidden');
+                return;
+            }
+
+            section.classList.remove('hidden');
+            list.innerHTML = '';
+
+            tasks.forEach(function(task) {
+                var li = document.createElement('li');
+                li.className = 'task-item priority-' + task.priority + ' status-' + task.status;
+
+                var html = '<div class="task-item-header">';
+                html += '<span class="task-title">' + esc(task.title) + '</span>';
+                html += '<span class="task-status-badge status-' + task.status + '">' + task.status + '</span>';
+                html += '</div>';
+
+                if (task.description) {
+                    html += '<div class="task-description">' + esc(task.description) + '</div>';
+                }
+
+                if (task.tags) {
+                    html += '<div class="task-meta-row"><div class="task-tags">';
+                    task.tags.split(',').forEach(function(tag) {
+                        tag = tag.trim();
+                        if (tag) html += '<span class="task-tag">' + esc(tag) + '</span>';
+                    });
+                    html += '</div></div>';
+                }
+
+                if (task.status === 'active' || task.status === 'backlog') {
+                    html += '<div class="task-actions">';
+                    if (task.status === 'backlog') {
+                        html += '<button class="task-btn" data-task-id="' + task.id + '" data-action="active">Activate</button>';
+                    }
+                    html += '<button class="task-btn btn-done" data-task-id="' + task.id + '" data-action="done">Done</button>';
+                    html += '<button class="task-btn btn-cancel" data-task-id="' + task.id + '" data-action="cancelled">Cancel</button>';
+                    html += '</div>';
+                }
+
+                li.innerHTML = html;
+                list.appendChild(li);
+            });
+        }
+
+        // ── Task Create Form ──
+        function initTaskCreateForm() {
+            var tasksView = document.getElementById('tasks-view');
+            if (!tasksView) return;
+
+            var formWrap = document.createElement('div');
+            formWrap.id = 'task-create-form';
+            formWrap.style.cssText = 'margin-bottom: 16px;';
+
+            var toggleBtn = document.createElement('button');
+            toggleBtn.id = 'task-create-toggle';
+            toggleBtn.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:4px;border:1px dashed var(--border);background:transparent;color:var(--text-muted);font-size:11px;font-family:IBM Plex Sans,sans-serif;cursor:pointer;width:100%;transition:border-color 0.15s,color 0.15s;letter-spacing:0.03em';
+            toggleBtn.innerHTML = '<span style="font-size:14px;line-height:1">+</span> New task';
+
+            var fields = document.createElement('div');
+            fields.id = 'task-create-fields';
+            fields.className = 'hidden';
+            fields.style.cssText = 'background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;padding:12px;display:flex;flex-direction:column;gap:8px';
+            fields.innerHTML = '<input type="text" id="task-title-input" placeholder="Task title..." style="background:var(--bg-primary);border:1px solid var(--border);border-radius:3px;padding:6px 10px;color:var(--text-primary);font-size:12px;font-family:IBM Plex Sans,sans-serif;outline:none;width:100%" />'
+                + '<div style="display:flex;gap:8px;align-items:center">'
+                + '<label style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em">Priority</label>'
+                + '<select id="task-priority-select" style="background:var(--bg-primary);border:1px solid var(--border);border-radius:3px;padding:3px 8px;color:var(--text-primary);font-size:11px;font-family:IBM Plex Sans,sans-serif">'
+                + '<option value="1">High</option><option value="2" selected>Medium</option><option value="3">Low</option></select>'
+                + '<label style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-left:8px">Tags</label>'
+                + '<input type="text" id="task-tags-input" placeholder="bug, fix" style="background:var(--bg-primary);border:1px solid var(--border);border-radius:3px;padding:3px 8px;color:var(--text-primary);font-size:11px;font-family:IBM Plex Sans,sans-serif;flex:1;outline:none" /></div>'
+                + '<div style="display:flex;gap:6px;justify-content:flex-end">'
+                + '<button id="task-create-cancel" style="padding:4px 12px;border-radius:3px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:11px;font-family:IBM Plex Sans,sans-serif;cursor:pointer">Cancel</button>'
+                + '<button id="task-create-submit" style="padding:4px 12px;border-radius:3px;border:1px solid var(--accent);background:var(--accent);color:#fff;font-size:11px;font-family:IBM Plex Sans,sans-serif;cursor:pointer;font-weight:500">Create</button></div>'
+                + '<div style="font-size:10px;color:var(--text-muted);opacity:0.7">Tip: You can also create tasks via chronicle_task MCP tool</div>';
+
+            formWrap.appendChild(toggleBtn);
+            formWrap.appendChild(fields);
+
+            var filterBar = document.getElementById('tasks-filter-bar');
+            if (filterBar) {
+                tasksView.insertBefore(formWrap, filterBar);
+            } else {
+                tasksView.insertBefore(formWrap, tasksView.firstChild);
+            }
+
+            toggleBtn.addEventListener('click', function() {
+                toggleBtn.classList.add('hidden');
+                fields.classList.remove('hidden');
+                document.getElementById('task-title-input').focus();
+            });
+
+            document.getElementById('task-create-cancel').addEventListener('click', function() {
+                fields.classList.add('hidden');
+                toggleBtn.classList.remove('hidden');
+                document.getElementById('task-title-input').value = '';
+                document.getElementById('task-tags-input').value = '';
+            });
+
+            document.getElementById('task-create-submit').addEventListener('click', submitTask);
+
+            document.getElementById('task-title-input').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') submitTask();
+                if (e.key === 'Escape') {
+                    fields.classList.add('hidden');
+                    toggleBtn.classList.remove('hidden');
+                }
+            });
+        }
+
+        function submitTask() {
+            var titleInput = document.getElementById('task-title-input');
+            var title = titleInput.value.trim();
+            if (!title) return;
+
+            var priority = parseInt(document.getElementById('task-priority-select').value);
+            var tags = document.getElementById('task-tags-input').value.trim();
+
+            send({ type: 'createTask', title: title, priority: priority, tags: tags });
+
+            titleInput.value = '';
+            document.getElementById('task-tags-input').value = '';
+            document.getElementById('task-create-fields').classList.add('hidden');
+            document.getElementById('task-create-toggle').classList.remove('hidden');
+        }
+
+        // ── Tabs ──
+        function switchTab(tabName) {
+            currentTab = tabName;
+            document.querySelectorAll('.detail-tab').forEach(function(tab) {
+                var isActive = tab.getAttribute('data-detail-tab') === tabName;
+                tab.classList.toggle('active', isActive);
+                tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            });
+            document.querySelectorAll('.detail-view').forEach(function(view) {
+                view.classList.remove('active');
+            });
+            var viewId = tabName === 'signatures' ? 'signature-view' :
+                         tabName === 'source' ? 'source-view' : 'tasks-view';
+            var targetView = document.getElementById(viewId);
+            if (targetView) targetView.classList.add('active');
+        }
+
+        function initTabs() {
+            document.querySelectorAll('.detail-tab').forEach(function(tab) {
+                tab.addEventListener('click', function() {
+                    switchTab(tab.getAttribute('data-detail-tab'));
+                });
+            });
+        }
+
+        // ── Command Palette ──
+        function initCommandPalette() {
+            var overlay = document.getElementById('cmd-palette-overlay');
+            var input = document.getElementById('cmd-palette-input');
+            var results = document.getElementById('cmd-palette-results');
+            var trigger = document.getElementById('cmd-palette-trigger');
+            var emptyState = document.getElementById('cmd-palette-empty');
+            var focusedIndex = -1;
+            var resultItems = [];
+
+            function open() {
+                overlay.classList.remove('hidden');
+                input.value = '';
+                input.focus();
+                renderResults('');
+                focusedIndex = -1;
+            }
+
+            function close() {
+                overlay.classList.add('hidden');
+                input.value = '';
+            }
+
+            function renderResults(query) {
+                results.querySelectorAll('.cmd-result-section-label, .cmd-result-item').forEach(function(el) { el.remove(); });
+                resultItems = [];
+
+                if (!query) {
+                    if (emptyState) emptyState.classList.add('hidden');
+                    var label = document.createElement('div');
+                    label.className = 'cmd-result-section-label';
+                    label.textContent = 'Files';
+                    results.insertBefore(label, emptyState);
+                    allFiles.slice(0, 20).forEach(function(file, i) {
+                        var item = createResultItem(file, i);
+                        results.insertBefore(item, emptyState);
+                        resultItems.push(item);
+                    });
+                    return;
+                }
+
+                var q = query.toLowerCase();
+                var scored = allFiles.map(function(file) {
+                    var name = file.name.toLowerCase();
+                    var path = file.path.toLowerCase();
+                    var score = 0;
+                    if (name === q) score = 100;
+                    else if (name.startsWith(q)) score = 80;
+                    else if (name.includes(q)) score = 60;
+                    else if (path.includes(q)) score = 40;
+                    return { file: file, score: score };
+                }).filter(function(s) { return s.score > 0; })
+                  .sort(function(a, b) { return b.score - a.score; })
+                  .slice(0, 20);
+
+                if (scored.length === 0) {
+                    if (emptyState) emptyState.classList.remove('hidden');
+                    return;
+                }
+                if (emptyState) emptyState.classList.add('hidden');
+
+                var lbl = document.createElement('div');
+                lbl.className = 'cmd-result-section-label';
+                lbl.textContent = 'Files';
+                results.insertBefore(lbl, emptyState);
+
+                scored.forEach(function(s, i) {
+                    var item = createResultItem(s.file, i);
+                    results.insertBefore(item, emptyState);
+                    resultItems.push(item);
+                });
+                focusedIndex = 0;
+                updateFocus();
+            }
+
+            function createResultItem(file, index) {
+                var item = document.createElement('div');
+                item.className = 'cmd-result-item';
+                item.setAttribute('data-index', index);
+                item.innerHTML = '<span class="cmd-result-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg></span>'
+                    + '<span class="cmd-result-name">' + esc(file.name) + '</span>'
+                    + '<span class="cmd-result-path">' + esc(file.path) + '</span>';
+                item.addEventListener('click', function() {
+                    selectFile(file.path);
+                    close();
+                });
+                return item;
+            }
+
+            function updateFocus() {
+                resultItems.forEach(function(item, i) {
+                    item.classList.toggle('focused', i === focusedIndex);
+                });
+                if (focusedIndex >= 0 && resultItems[focusedIndex]) {
+                    resultItems[focusedIndex].scrollIntoView({ block: 'nearest' });
+                }
+            }
+
+            trigger.addEventListener('click', open);
+
+            document.addEventListener('keydown', function(e) {
+                if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                    e.preventDefault();
+                    if (overlay.classList.contains('hidden')) open();
+                    else close();
+                }
+                if (e.key === 'Escape' && !overlay.classList.contains('hidden')) {
+                    close();
+                }
+            });
+
+            overlay.addEventListener('click', function(e) {
+                if (e.target === overlay) close();
+            });
+
+            input.addEventListener('input', function() {
+                renderResults(input.value.trim());
+            });
+
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (focusedIndex < resultItems.length - 1) { focusedIndex++; updateFocus(); }
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    if (focusedIndex > 0) { focusedIndex--; updateFocus(); }
+                } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (focusedIndex >= 0 && resultItems[focusedIndex]) { resultItems[focusedIndex].click(); }
+                }
+            });
+        }
+
+        // ── Splitter ──
+        function initSplitter() {
+            var splitter = document.getElementById('splitter');
+            var treePanel = document.getElementById('tree-panel');
+            if (!splitter || !treePanel) return;
+
+            var isDragging = false;
+            splitter.addEventListener('mousedown', function(e) {
+                isDragging = true;
+                splitter.classList.add('dragging');
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', function(e) {
+                if (!isDragging) return;
+                var newWidth = Math.min(Math.max(e.clientX, 160), window.innerWidth * 0.5);
+                treePanel.style.width = newWidth + 'px';
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (!isDragging) return;
                 isDragging = false;
                 splitter.classList.remove('dragging');
                 document.body.style.cursor = '';
                 document.body.style.userSelect = '';
-            }
-        });
-    </script>
+            });
+        }
 
-    <!-- Theme Switcher -->
-    <div id="theme-switcher">
-        <div id="theme-panel">
-            <div id="theme-switcher-label">Theme</div>
-        </div>
-        <button id="theme-gear-btn" title="Change theme" aria-label="Change theme">
-            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.1 7.1 0 0 0-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.47.47 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.37 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.47.47 0 0 0-.12-.61l-2.01-1.58zM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"/></svg>
-        </button>
-    </div>
-    <script>
-        (function() {
-            const THEMES = {
-                'Catppuccin': {
-                    '--bg-primary': '#1e1e2e', '--bg-secondary': '#181825', '--bg-tertiary': '#313244',
-                    '--text-primary': '#cdd6f4', '--text-secondary': '#bac2de', '--text-muted': '#6c7086',
-                    '--accent': '#cba6f7', '--accent-green': '#a6e3a1', '--accent-orange': '#fab387',
-                    '--accent-purple': '#cba6f7', '--accent-cyan': '#89dceb', '--accent-yellow': '#f9e2af',
-                    '--accent-red': '#f38ba8', '--border': '#45475a',
-                },
-                'Ink & Vellum': {
-                    '--bg-primary': '#1c1a17', '--bg-secondary': '#252219', '--bg-tertiary': '#332f26',
-                    '--text-primary': '#e8e0cc', '--text-secondary': '#b8ad96', '--text-muted': '#6b6453',
-                    '--accent': '#c9923a', '--accent-green': '#7fa65c', '--accent-orange': '#d4783e',
-                    '--accent-purple': '#9b7bb8', '--accent-cyan': '#5fa89e', '--accent-yellow': '#d4a843',
-                    '--accent-red': '#c96052', '--border': '#3d3829',
-                },
-                'Nord': {
-                    '--bg-primary': '#2e3440', '--bg-secondary': '#3b4252', '--bg-tertiary': '#434c5e',
-                    '--text-primary': '#d8dee9', '--text-secondary': '#b8c5d6', '--text-muted': '#616e88',
-                    '--accent': '#88c0d0', '--accent-green': '#a3be8c', '--accent-orange': '#d08770',
-                    '--accent-purple': '#b48ead', '--accent-cyan': '#8fbcbb', '--accent-yellow': '#ebcb8b',
-                    '--accent-red': '#bf616a', '--border': '#4c566a',
-                },
-                'Sepia Light': {
-                    '--bg-primary': '#f5f0e8', '--bg-secondary': '#ede8dc', '--bg-tertiary': '#ddd7c8',
-                    '--text-primary': '#2c2418', '--text-secondary': '#5a4e3a', '--text-muted': '#9a8e7a',
-                    '--accent': '#8b5e1a', '--accent-green': '#4a7c3f', '--accent-orange': '#b85c1a',
-                    '--accent-purple': '#6b4a8a', '--accent-cyan': '#2a6b7c', '--accent-yellow': '#8b6914',
-                    '--accent-red': '#a03020', '--border': '#c8c0aa',
-                },
-                'Tokyo Night': {
-                    '--bg-primary': '#1a1b26', '--bg-secondary': '#24283b', '--bg-tertiary': '#414868',
-                    '--text-primary': '#c0caf5', '--text-secondary': '#a9b1d6', '--text-muted': '#565f89',
-                    '--accent': '#7aa2f7', '--accent-green': '#9ece6a', '--accent-orange': '#ff9e64',
-                    '--accent-purple': '#bb9af7', '--accent-cyan': '#7dcfff', '--accent-yellow': '#e0af68',
-                    '--accent-red': '#f7768e', '--border': '#3b4261',
-                },
-            };
+        // ── Theme ──
+        function initTheme() {
+            var gearBtn = document.getElementById('theme-gear-btn');
+            var panel = document.getElementById('theme-panel');
+            if (!gearBtn || !panel) return;
 
-            const SWATCHES = {
-                'Catppuccin': '#cba6f7', 'Ink & Vellum': '#c9923a',
-                'Nord': '#88c0d0', 'Sepia Light': '#8b5e1a', 'Tokyo Night': '#7aa2f7',
-            };
+            var current = localStorage.getItem('chronicle-theme') || 'observatory';
+            document.documentElement.setAttribute('data-theme', current);
 
-            const LS_KEY = 'chronicle-theme';
-            let current = localStorage.getItem(LS_KEY) || 'Nord';
-
-            function applyTheme(name) {
-                current = name;
-                localStorage.setItem(LS_KEY, name);
-                const vars = THEMES[name];
-                const root = document.documentElement;
-                Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
-                document.querySelectorAll('.theme-btn').forEach(b => {
-                    b.classList.toggle('active', b.dataset.theme === name);
+            function updateActive() {
+                panel.querySelectorAll('.theme-btn').forEach(function(btn) {
+                    btn.classList.toggle('active', btn.getAttribute('data-theme-value') === current);
                 });
             }
+            updateActive();
 
-            const panel = document.getElementById('theme-panel');
-            const gearBtn = document.getElementById('theme-gear-btn');
-
-            // Build theme buttons (already sorted alphabetically in THEMES object)
-            Object.keys(THEMES).forEach(name => {
-                const btn = document.createElement('button');
-                btn.className = 'theme-btn';
-                btn.dataset.theme = name;
-                const swatch = document.createElement('span');
-                swatch.className = 'theme-swatch';
-                swatch.style.background = SWATCHES[name];
-                btn.appendChild(swatch);
-                btn.appendChild(document.createTextNode(name));
-                btn.addEventListener('click', () => { applyTheme(name); });
-                panel.appendChild(btn);
+            panel.querySelectorAll('.theme-btn').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    current = btn.getAttribute('data-theme-value');
+                    document.documentElement.setAttribute('data-theme', current);
+                    localStorage.setItem('chronicle-theme', current);
+                    updateActive();
+                    panel.classList.remove('open');
+                });
             });
 
-            // Toggle panel on gear click
-            gearBtn.addEventListener('click', (e) => {
+            gearBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 panel.classList.toggle('open');
             });
 
-            // Close on outside click
-            document.addEventListener('click', (e) => {
+            document.addEventListener('click', function(e) {
                 if (!document.getElementById('theme-switcher').contains(e.target)) {
                     panel.classList.remove('open');
                 }
             });
+        }
 
-            applyTheme(current);
-        })();
+        // ── Tree Filters ──
+        function initTreeFilters() {
+            document.querySelectorAll('.tree-filter-pill').forEach(function(pill) {
+                pill.addEventListener('click', function() {
+                    var mode = pill.getAttribute('data-tree-mode');
+                    currentTreeMode = mode;
+
+                    document.querySelectorAll('.tree-filter-pill').forEach(function(p) {
+                        p.classList.toggle('active', p.getAttribute('data-tree-mode') === mode);
+                        p.setAttribute('aria-pressed', p.getAttribute('data-tree-mode') === mode ? 'true' : 'false');
+                    });
+
+                    if (mode === 'code' && codeTreeData) {
+                        treeData = codeTreeData;
+                        renderTree(treeData);
+                    } else if (mode === 'all' && allTreeData) {
+                        treeData = allTreeData;
+                        renderTree(treeData);
+                    } else {
+                        send({ type: 'getTree', mode: mode });
+                    }
+                });
+            });
+        }
+
+        // ── Task Actions (delegated) ──
+        function initTaskActions() {
+            document.getElementById('tasks-view').addEventListener('click', function(e) {
+                var btn = e.target.closest('.task-btn');
+                if (!btn) return;
+                var taskId = parseInt(btn.getAttribute('data-task-id'));
+                var action = btn.getAttribute('data-action');
+                if (taskId && action) {
+                    send({ type: 'updateTaskStatus', taskId: taskId, status: action });
+                }
+            });
+
+            var doneToggle = document.getElementById('task-done-toggle');
+            var doneWrap = document.getElementById('tasks-done-list-wrap');
+            if (doneToggle && doneWrap) {
+                doneToggle.addEventListener('click', function() {
+                    doneToggle.classList.toggle('open');
+                    doneWrap.classList.toggle('collapsed');
+                });
+            }
+
+            var cancelledToggle = document.getElementById('task-cancelled-toggle');
+            var cancelledWrap = document.getElementById('tasks-cancelled-list-wrap');
+            if (cancelledToggle && cancelledWrap) {
+                cancelledToggle.addEventListener('click', function() {
+                    cancelledToggle.classList.toggle('open');
+                    cancelledWrap.classList.toggle('collapsed');
+                });
+            }
+        }
+
+        // ── Init ──
+        connect();
+        initTabs();
+        initTreeFilters();
+        initSplitter();
+        initTheme();
+        initCommandPalette();
+        initTaskCreateForm();
+        initTaskActions();
+
+        // Request tasks on load
+        setTimeout(function() { send({ type: 'getTasks' }); }, 200);
+    })();
     </script>
 </body>
 </html>`;

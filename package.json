@@ -1,6 +1,6 @@
 {
   "name": "@tensakulabs/chronicle",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "mcpName": "io.github.tensakulabs/chronicle",
   "description": "MCP Server for persistent code indexing. Gives AI assistants (Claude, Gemini, Copilot, Cursor) instant access to your codebase. 50x less context than grep.",
   "main": "build/index.js",

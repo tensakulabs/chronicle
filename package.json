@@ -92,6 +92,16 @@
     "ts-jest": "^29.0.0",
     "typescript": "^5.0.0"
   },
+  "files": [
+    "build/",
+    "scripts/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18.0.0"
   }

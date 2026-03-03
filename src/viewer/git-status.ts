@@ -10,6 +10,7 @@
 
 import { simpleGit, SimpleGit, StatusResult } from 'simple-git';
 import path from 'path';
+import { existsSync } from 'fs';
 
 // ============================================================
 // Types
@@ -29,10 +30,21 @@ export interface GitStatusInfo {
 
 /**
  * Check if a directory is inside a git repository (traverses parent dirs)
+ * Uses both filesystem check and simple-git for reliability.
  */
 export async function isGitRepo(projectPath: string): Promise<boolean> {
+    // Fast filesystem check: walk up looking for .git dir or file (worktree)
+    const absPath = path.resolve(projectPath);
+    let dir = absPath;
+    for (let i = 0; i < 10; i++) {
+        if (existsSync(path.join(dir, '.git'))) return true;
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    // Fallback: ask simple-git (handles edge cases like git worktrees without .git dir)
     try {
-        return await simpleGit(projectPath).checkIsRepo();
+        return await simpleGit(absPath).checkIsRepo();
     } catch {
         return false;
     }

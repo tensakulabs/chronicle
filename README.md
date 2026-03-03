@@ -11,13 +11,6 @@ Chronicle is an MCP server that gives AI coding assistants instant access to you
 
 ![Chronicle Demo](docs/chronicle-demo.png)
 
-<details>
-<summary>Animated version</summary>
-
-![Chronicle Demo GIF](docs/chronicle-demo.gif)
-
-</details>
-
 ## The Problem
 
 Every time your AI assistant searches for code, it:

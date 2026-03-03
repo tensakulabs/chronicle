@@ -204,8 +204,8 @@ export function update(params: UpdateParams): UpdateResult {
                 fileId = queries.insertFile(relativePath, newHash);
             }
 
-            // Insert lines with diff tracking
-            let lineId = 1;
+            // Insert lines and capture DB-assigned IDs (AUTOINCREMENT)
+            const lineNumberToId = new Map<number, number>();
             for (const line of extraction.lines) {
                 const lineContent = contentLines[line.lineNumber - 1] ?? '';
                 const lineHash = shortHash(lineContent);
@@ -214,14 +214,8 @@ export function update(params: UpdateParams): UpdateResult {
                 const oldModified = oldHashToModified.get(lineHash);
                 const modified = oldModified ?? now;  // Keep old timestamp if hash existed
 
-                queries.insertLine(fileId, lineId++, line.lineNumber, line.lineType, lineHash, modified);
-            }
-
-            // Build line number to line ID mapping
-            const lineNumberToId = new Map<number, number>();
-            lineId = 1;
-            for (const line of extraction.lines) {
-                lineNumberToId.set(line.lineNumber, lineId++);
+                const dbLineId = queries.insertLine(fileId, line.lineNumber, line.lineType, lineHash, modified);
+                lineNumberToId.set(line.lineNumber, dbLineId);
             }
 
             // Insert items and occurrences
@@ -230,14 +224,13 @@ export function update(params: UpdateParams): UpdateResult {
                 let itemLineId = lineNumberToId.get(item.lineNumber);
                 if (itemLineId === undefined) {
                     // Line wasn't recorded, add it now
-                    const newLineId = lineId++;
                     const lineContent = contentLines[item.lineNumber - 1] ?? '';
                     const lineHash = shortHash(lineContent);
 
                     const oldModified = oldHashToModified.get(lineHash);
                     const modified = oldModified ?? now;
 
-                    queries.insertLine(fileId, newLineId, item.lineNumber, item.lineType, lineHash, modified);
+                    const newLineId = queries.insertLine(fileId, item.lineNumber, item.lineType, lineHash, modified);
                     lineNumberToId.set(item.lineNumber, newLineId);
                     itemLineId = newLineId;
                 }

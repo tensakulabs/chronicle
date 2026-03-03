@@ -84,7 +84,14 @@ export async function startViewer(projectPath: string): Promise<string> {
     // Git status - fetch once at startup, refresh on file changes
     let cachedGitInfo: GitStatusInfo | undefined;
     const refreshGitStatus = async () => {
-        cachedGitInfo = await getGitStatus(projectPath);
+        const newInfo = await getGitStatus(projectPath);
+        // If refresh returned a degraded result (had remote before, now claims none due to
+        // spawn errors like EBADF), preserve the previous state rather than overwriting
+        if (cachedGitInfo?.hasRemote && !newInfo.hasRemote && newInfo.fileStatuses.size === 0 && newInfo.isGitRepo) {
+            console.error('[Viewer] Git status refresh returned degraded result, keeping previous state');
+            return;
+        }
+        cachedGitInfo = newInfo;
         console.error('[Viewer] Git status:', cachedGitInfo.isGitRepo ? 'repo' : 'no-repo',
             cachedGitInfo.hasRemote ? 'with-remote' : 'no-remote',
             cachedGitInfo.fileStatuses.size, 'files with status');

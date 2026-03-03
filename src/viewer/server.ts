@@ -126,9 +126,13 @@ export async function startViewer(projectPath: string): Promise<string> {
 
         // Build fresh trees for both modes using viewer session tracking
         const freshDb = openDatabase(dbPath, true);
-        const codeTree = await buildTree(freshDb.getDb(), projectPath, 'code', viewerSessionChanges, cachedGitInfo);
-        const allTree = await buildTree(freshDb.getDb(), projectPath, 'all', viewerSessionChanges, cachedGitInfo);
-        freshDb.close();
+        let codeTree, allTree;
+        try {
+            codeTree = await buildTree(freshDb.getDb(), projectPath, 'code', viewerSessionChanges, cachedGitInfo);
+            allTree = await buildTree(freshDb.getDb(), projectPath, 'all', viewerSessionChanges, cachedGitInfo);
+        } finally {
+            freshDb.close();
+        }
 
         // Broadcast to all connected clients
         wss.clients.forEach((client) => {
@@ -203,18 +207,24 @@ export async function startViewer(projectPath: string): Promise<string> {
                 if (msg.type === 'getTree') {
                     const mode = msg.mode || 'code';
                     const freshDb = openDatabase(dbPath, true);
-                    const tree = await buildTree(freshDb.getDb(), projectPath, mode, viewerSessionChanges, cachedGitInfo);
-                    freshDb.close();
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'tree', mode, data: tree }));
+                    try {
+                        const tree = await buildTree(freshDb.getDb(), projectPath, mode, viewerSessionChanges, cachedGitInfo);
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: 'tree', mode, data: tree }));
+                        }
+                    } finally {
+                        freshDb.close();
                     }
                 }
                 else if (msg.type === 'getSignature' && msg.file) {
                     const freshDb = openDatabase(dbPath, true);
-                    const signature = await getFileSignature(freshDb.getDb(), msg.file);
-                    freshDb.close();
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'signature', file: msg.file, data: signature }));
+                    try {
+                        const signature = await getFileSignature(freshDb.getDb(), msg.file);
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: 'signature', file: msg.file, data: signature }));
+                        }
+                    } finally {
+                        freshDb.close();
                     }
                 }
                 else if (msg.type === 'getFileContent' && msg.file) {
@@ -225,10 +235,13 @@ export async function startViewer(projectPath: string): Promise<string> {
                 }
                 else if (msg.type === 'getTasks') {
                     const freshDb = openDatabase(dbPath, true);
-                    const taskData = getTasksFromDb(freshDb.getDb());
-                    freshDb.close();
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'tasks', data: taskData }));
+                    try {
+                        const taskData = getTasksFromDb(freshDb.getDb());
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: 'tasks', data: taskData }));
+                        }
+                    } finally {
+                        freshDb.close();
                     }
                 }
                 else if (msg.type === 'updateTaskStatus' && msg.taskId && msg.status) {

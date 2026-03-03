@@ -443,19 +443,13 @@ function indexFile(
     const contentLines = content.split('\n');
     const now = Date.now();
 
-    // Insert lines with hash
-    let lineId = 1;
+    // Insert lines and capture DB-assigned IDs (AUTOINCREMENT)
+    const lineNumberToId = new Map<number, number>();
     for (const line of extraction.lines) {
         const lineContent = contentLines[line.lineNumber - 1] ?? '';
         const lineHash = shortHash(lineContent);
-        queries.insertLine(fileId, lineId++, line.lineNumber, line.lineType, lineHash, now);
-    }
-
-    // Build line number to line ID mapping
-    const lineNumberToId = new Map<number, number>();
-    lineId = 1;
-    for (const line of extraction.lines) {
-        lineNumberToId.set(line.lineNumber, lineId++);
+        const dbLineId = queries.insertLine(fileId, line.lineNumber, line.lineType, lineHash, now);
+        lineNumberToId.set(line.lineNumber, dbLineId);
     }
 
     // Insert items and occurrences
@@ -464,10 +458,9 @@ function indexFile(
         const lineIdForItem = lineNumberToId.get(item.lineNumber);
         if (lineIdForItem === undefined) {
             // Line wasn't recorded, add it now
-            const newLineId = lineId++;
             const lineContent = contentLines[item.lineNumber - 1] ?? '';
             const lineHash = shortHash(lineContent);
-            queries.insertLine(fileId, newLineId, item.lineNumber, item.lineType, lineHash, now);
+            const newLineId = queries.insertLine(fileId, item.lineNumber, item.lineType, lineHash, now);
             lineNumberToId.set(item.lineNumber, newLineId);
         }
 

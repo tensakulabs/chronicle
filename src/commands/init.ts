@@ -21,8 +21,9 @@ export function shortHash(content: Buffer | string): string {
     return createHash('sha256').update(content).digest('hex').substring(0, 16);
 }
 
-import { createDatabase, createQueries, type ChronicleDatabase, type Queries } from '../db/index.js';
-import { extract, getSupportedExtensions } from '../parser/index.js';
+import { createDatabase, createQueries, type Queries } from '../db/index.js';
+import { getSupportedExtensions } from '../parser/index.js';
+import { indexFileContent } from './index-file.js';
 
 // ============================================================
 // Types
@@ -189,7 +190,7 @@ export async function init(params: InitParams): Promise<InitResult> {
     db.transaction(() => {
         for (const filePath of files) {
             try {
-                const result = indexFile(params.path, filePath, db, queries, incremental);
+                const result = indexFile(params.path, filePath, queries, incremental);
                 if (result.skipped) {
                     filesSkipped++;
                 } else if (result.success) {
@@ -315,7 +316,6 @@ interface IndexFileResult {
 function indexFile(
     projectPath: string,
     relativePath: string,
-    db: ChronicleDatabase,
     queries: Queries,
     incremental: boolean = false
 ): IndexFileResult {
@@ -357,79 +357,9 @@ function indexFile(
         }
     }
 
-    // Extract data from file
-    const extraction = extract(content, relativePath);
-    if (!extraction) {
-        return {
-            success: false,
-            items: 0,
-            methods: 0,
-            types: 0,
-            error: 'Unsupported file type or parse error',
-        };
-    }
-
     // Insert file record
     const fileId = queries.insertFile(relativePath, hash);
 
-    // Split content into lines for hashing
-    const contentLines = content.split('\n');
-    const now = Date.now();
-
-    // Insert lines and capture DB-assigned IDs (AUTOINCREMENT)
-    const lineNumberToId = new Map<number, number>();
-    for (const line of extraction.lines) {
-        const lineContent = contentLines[line.lineNumber - 1] ?? '';
-        const lineHash = shortHash(lineContent);
-        const dbLineId = queries.insertLine(fileId, line.lineNumber, line.lineType, lineHash, now);
-        lineNumberToId.set(line.lineNumber, dbLineId);
-    }
-
-    // Insert items and occurrences
-    const itemsInserted = new Set<string>();
-    for (const item of extraction.items) {
-        const lineIdForItem = lineNumberToId.get(item.lineNumber);
-        if (lineIdForItem === undefined) {
-            // Line wasn't recorded, add it now
-            const lineContent = contentLines[item.lineNumber - 1] ?? '';
-            const lineHash = shortHash(lineContent);
-            const newLineId = queries.insertLine(fileId, item.lineNumber, item.lineType, lineHash, now);
-            lineNumberToId.set(item.lineNumber, newLineId);
-        }
-
-        const itemId = queries.getOrCreateItem(item.term);
-        const finalLineId = lineNumberToId.get(item.lineNumber)!;
-        queries.insertOccurrence(itemId, fileId, finalLineId);
-        itemsInserted.add(item.term);
-    }
-
-    // Insert methods
-    for (const method of extraction.methods) {
-        queries.insertMethod(
-            fileId,
-            method.name,
-            method.prototype,
-            method.lineNumber,
-            method.visibility,
-            method.isStatic,
-            method.isAsync
-        );
-    }
-
-    // Insert types
-    for (const type of extraction.types) {
-        queries.insertType(fileId, type.name, type.kind, type.lineNumber);
-    }
-
-    // Insert signature (header comments)
-    if (extraction.headerComments.length > 0) {
-        queries.insertSignature(fileId, extraction.headerComments.join('\n'));
-    }
-
-    return {
-        success: true,
-        items: itemsInserted.size,
-        methods: extraction.methods.length,
-        types: extraction.types.length,
-    };
+    // Delegate extraction and insertion to shared function
+    return indexFileContent({ fileId, content, relativePath, queries });
 }

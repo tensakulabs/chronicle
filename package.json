@@ -10,7 +10,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc && npm run copy-assets",
-    "copy-assets": "node -e \"require('fs').cpSync('src/db/schema.sql','build/db/schema.sql')\"",
+    "copy-assets": "node -e \"const fs=require('fs'); fs.cpSync('src/db/schema.sql','build/db/schema.sql'); fs.cpSync('src/viewer/viewer.css','build/viewer/viewer.css'); fs.cpSync('src/viewer/viewer-client.js','build/viewer/viewer-client.js');\"",
     "watch": "tsc --watch",
     "start": "node build/index.js",
     "dev": "tsc && node build/index.js",

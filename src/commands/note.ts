@@ -13,8 +13,9 @@
 
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { PRODUCT_NAME, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
+import { INDEX_DIR } from '../constants.js';
 import { openDatabase } from '../db/index.js';
+import { validateProjectIndex } from '../utils/index.js';
 
 // ============================================================
 // Types
@@ -59,21 +60,20 @@ export function note(params: NoteParams): NoteResult {
     const { path: projectPath, note: newNote, append, clear, history, search, limit } = params;
 
     // Validate project path
-    const dbPath = join(projectPath, INDEX_DIR, 'index.db');
-
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             note: null,
             action: 'read',
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
     // History and search need write access too (for auto-migration)
     const isWriteOperation = newNote !== undefined || clear;
     const needsReadWrite = isWriteOperation || history || search !== undefined;
-    const db = openDatabase(dbPath, !needsReadWrite);
+    const db = openDatabase(validation.dbPath, !needsReadWrite);
 
     try {
         // Auto-migrate: ensure note_history table exists (for DBs created before v1.10)

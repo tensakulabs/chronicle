@@ -6,9 +6,10 @@
 
 import { existsSync } from 'fs';
 import { join, basename } from 'path';
-import { PRODUCT_NAME, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
+import { INDEX_DIR } from '../constants.js';
 
-import { openDatabase, createQueries } from '../db/index.js';
+import { openDatabase } from '../db/index.js';
+import { validateProjectIndex } from '../utils/index.js';
 
 // ============================================================
 // Types
@@ -65,37 +66,33 @@ export function link(params: LinkParams): LinkResult {
     const { path: projectPath, dependency: dependencyPath, name } = params;
 
     // Validate project path
-    const indexDir = join(projectPath, INDEX_DIR);
-    const dbPath = join(indexDir, 'index.db');
-
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             name: '',
             filesAvailable: 0,
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
     // Validate dependency path
-    const depIndexDir = join(dependencyPath, INDEX_DIR);
-    const depDbPath = join(depIndexDir, 'index.db');
-
-    if (!existsSync(depDbPath)) {
+    const depValidation = validateProjectIndex(dependencyPath);
+    if (!depValidation.valid) {
         return {
             success: false,
             name: '',
             filesAvailable: 0,
-            error: `No ${PRODUCT_NAME} index found at ${dependencyPath}. Run ${TOOL_PREFIX}init on dependency first.`,
+            error: depValidation.error,
         };
     }
 
     // Open main database
-    const db = openDatabase(dbPath);
+    const db = openDatabase(validation.dbPath);
 
     try {
         // Get dependency info
-        const depDb = openDatabase(depDbPath, true);
+        const depDb = openDatabase(depValidation.dbPath, true);
         const depStats = depDb.getStats();
         const depName = name ?? depDb.getMetadata('project_name') ?? basename(dependencyPath);
         depDb.close();
@@ -148,19 +145,17 @@ export function unlink(params: UnlinkParams): UnlinkResult {
     const { path: projectPath, dependency: dependencyPath } = params;
 
     // Validate project path
-    const indexDir = join(projectPath, INDEX_DIR);
-    const dbPath = join(indexDir, 'index.db');
-
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             removed: false,
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
     // Open database
-    const db = openDatabase(dbPath);
+    const db = openDatabase(validation.dbPath);
 
     try {
         const result = db.getDb().prepare(
@@ -191,19 +186,17 @@ export function listLinks(params: ListLinksParams): ListLinksResult {
     const { path: projectPath } = params;
 
     // Validate project path
-    const indexDir = join(projectPath, INDEX_DIR);
-    const dbPath = join(indexDir, 'index.db');
-
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             dependencies: [],
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
     // Open database
-    const db = openDatabase(dbPath, true);
+    const db = openDatabase(validation.dbPath, true);
 
     try {
         const deps = db.getDb().prepare(

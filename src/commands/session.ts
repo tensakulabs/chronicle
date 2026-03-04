@@ -10,10 +10,11 @@
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { minimatch } from 'minimatch';
-import { PRODUCT_NAME, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
+import { INDEX_DIR } from '../constants.js';
 import { openDatabase, createQueries } from '../db/index.js';
 import { update } from './update.js';
-import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
+import { shortHash } from './init.js';
+import { validateProjectIndex, DEFAULT_EXCLUDE, readGitignore } from '../utils/index.js';
 
 // ============================================================
 // Types
@@ -69,9 +70,8 @@ export function session(params: SessionParams): SessionResult {
     const { path: projectPath } = params;
 
     // Validate project path
-    const dbPath = join(projectPath, INDEX_DIR, 'index.db');
-
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             isNewSession: false,
@@ -79,11 +79,11 @@ export function session(params: SessionParams): SessionResult {
             externalChanges: [],
             reindexed: [],
             note: null,
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
-    const db = openDatabase(dbPath, false);
+    const db = openDatabase(validation.dbPath, false);
     const queries = createQueries(db);
     const now = Date.now();
 

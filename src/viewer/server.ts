@@ -15,11 +15,13 @@ import { exec } from 'child_process';
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
-import chokidar, { FSWatcher } from 'chokidar';
-import { openDatabase, createQueries } from '../db/index.js';
-import { update as updateIndex } from '../commands/update.js';
+import type { FSWatcher } from 'chokidar';
+import { openDatabase } from '../db/index.js';
 import { getGitStatus, GitStatusInfo, GitFileStatus } from './git-status.js';
 import { PRODUCT_NAME, INDEX_DIR } from '../constants.js';
+import { dispatchMessage, type ViewerMessage, type SessionChangeInfo, type HandlerContext, type TreeNode } from './ws-handlers.js';
+import { getTasksFromDb } from './task-db.js';
+import { createFileWatcher } from './watcher.js';
 import type Database from 'better-sqlite3';
 
 const PORT = 3333;
@@ -29,40 +31,6 @@ let wss: WebSocketServer | null = null;
 let fileWatcher: FSWatcher | null = null;
 let viewerDbPath: string | null = null;
 let viewerDb: ReturnType<typeof openDatabase> | null = null;
-
-interface ViewerMessage {
-    type: 'getTree' | 'getSignature' | 'getFileContent' | 'getTasks' | 'updateTaskStatus' | 'updateTask' | 'createTask' | 'reorderTasks';
-    mode?: 'code' | 'all';  // Tree mode
-    path?: string;
-    file?: string;
-    taskId?: number;
-    taskIds?: number[];
-    status?: string;
-    title?: string;
-    priority?: number;
-    tags?: string;
-    description?: string;
-}
-
-interface TreeNode {
-    name: string;
-    path: string;
-    type: 'dir' | 'file';
-    fileType?: string;  // code, config, doc, asset, test, other
-    children?: TreeNode[];
-    stats?: {
-        items: number;
-        methods: number;
-        types: number;
-    };
-    status?: 'modified' | 'new' | 'unchanged';  // Session change status
-    gitStatus?: GitFileStatus;  // Git status for cat icon coloring
-}
-
-interface SessionChangeInfo {
-    modified: Set<string>;
-    new: Set<string>;
-}
 
 export async function startViewer(projectPath: string): Promise<string> {
     // Check if already running
@@ -74,7 +42,6 @@ export async function startViewer(projectPath: string): Promise<string> {
     viewerDbPath = dbPath;
     viewerDb = openDatabase(dbPath, true); // readonly for queries
     const sqlite = viewerDb.getDb();
-    const queries = createQueries(viewerDb);
     const projectRoot = path.resolve(projectPath);
 
     // Track files changed - initialize with DB session changes, then add live changes
@@ -107,111 +74,34 @@ export async function startViewer(projectPath: string): Promise<string> {
     server = createServer(app);
     wss = new WebSocketServer({ server });
 
-    function broadcastTasks(taskData: unknown[]): void {
-        wss!.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({ type: 'tasks', data: taskData }));
-            }
-        });
-    }
+    // File watcher for live reload (delegated to watcher module)
+    const { watcher, broadcastTreeUpdate } = createFileWatcher({
+        dbPath, projectPath, projectRoot, wss,
+        sessionChanges: viewerSessionChanges,
+        getCachedGitInfo: () => cachedGitInfo,
+        refreshGitStatus,
+        buildTree,
+    });
+    fileWatcher = watcher;
 
-    // File watcher for live reload
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const pendingChanges: Set<string> = new Set();  // Files changed since last broadcast
-
-    const broadcastTreeUpdate = async () => {
-        if (!wss) return;
-
-        // Re-index changed files before refreshing the tree
-        if (pendingChanges.size > 0) {
-            console.error('[Viewer] Re-indexing', pendingChanges.size, 'changed file(s)');
-            for (const changedFile of pendingChanges) {
-                // Convert absolute path to relative path
-                const relativePath = path.relative(projectRoot, changedFile).replace(/\\/g, '/');
-                try {
-                    // updateIndex opens its own DB connection with write access
-                    const result = updateIndex({ path: projectRoot, file: relativePath });
-                    console.error('[Viewer] Re-indexed:', relativePath, result.success ? '✓' : '✗');
-                    // Track as modified in viewer session
-                    viewerSessionChanges.modified.add(relativePath);
-                } catch (err) {
-                    console.error('[Viewer] Failed to re-index:', relativePath, err);
-                }
-            }
-            pendingChanges.clear();
-        }
-
-        // Refresh git status on file changes
-        await refreshGitStatus();
-
-        // Build fresh trees for both modes using viewer session tracking
-        const freshDb = openDatabase(dbPath, true);
-        let codeTree, allTree;
-        try {
-            codeTree = await buildTree(freshDb.getDb(), projectPath, 'code', viewerSessionChanges, cachedGitInfo);
-            allTree = await buildTree(freshDb.getDb(), projectPath, 'all', viewerSessionChanges, cachedGitInfo);
-        } finally {
-            freshDb.close();
-        }
-
-        // Broadcast to all connected clients
-        wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({ type: 'refresh', codeTree, allTree }));
-            }
-        });
-
-        console.error('[Viewer] Broadcast tree update to', wss.clients.size, 'clients');
+    // Handler context shared by every WebSocket message
+    const handlerCtx: HandlerContext = {
+        dbPath, projectPath, projectRoot,
+        sessionChanges: viewerSessionChanges,
+        cachedGitInfo,
+        wss,
+        buildTree,
+        getFileContent,
+        getFileSignature,
     };
 
-    // Use chokidar for reliable cross-platform file watching
-    fileWatcher = chokidar.watch(projectRoot, {
-        ignored: [
-            '**/node_modules/**',
-            '**/.git/**',
-            `**/${INDEX_DIR}/**`,
-            '**/build/**',
-            '**/dist/**'
-        ],
-        ignoreInitial: true,
-        persistent: true
-    });
-
-    fileWatcher.on('ready', () => {
-        console.error('[Viewer] Chokidar ready, watching for changes');
-    });
-
-    fileWatcher.on('error', (error: unknown) => {
-        console.error('[Viewer] Chokidar error:', error);
-    });
-
-    fileWatcher.on('all', (event: string, filePath: string) => {
-        console.error('[Viewer] Chokidar event:', event, filePath);
-
-        // Track changed files for re-indexing (only for change/add events on code files)
-        if ((event === 'change' || event === 'add') && /\.(ts|tsx|js|jsx|cs|rs|py|c|cpp|h|hpp|java|go|php|rb)$/i.test(filePath)) {
-            pendingChanges.add(filePath);
-        }
-
-        // Debounce: wait 500ms after last change before broadcasting
-        if (debounceTimer) {
-            clearTimeout(debounceTimer);
-        }
-        debounceTimer = setTimeout(() => {
-            console.error('[Viewer] Broadcasting after debounce');
-            broadcastTreeUpdate();
-        }, 500);
-    });
-
-    console.error('[Viewer] Initializing chokidar for', projectRoot);
-
     // Serve static HTML
-    app.get('/', (req, res) => {
+    app.get('/', (_req, res) => {
         res.send(getViewerHTML(projectPath));
     });
 
     // Debug endpoint to manually trigger refresh
-    app.get('/refresh', async (req, res) => {
+    app.get('/refresh', async (_req, res) => {
         await broadcastTreeUpdate();
         res.send('Refresh triggered');
     });
@@ -223,66 +113,9 @@ export async function startViewer(projectPath: string): Promise<string> {
         ws.on('message', async (data: Buffer) => {
             try {
                 const msg: ViewerMessage = JSON.parse(data.toString());
-
-                if (msg.type === 'getTree') {
-                    const mode = msg.mode || 'code';
-                    const freshDb = openDatabase(dbPath, true);
-                    try {
-                        const tree = await buildTree(freshDb.getDb(), projectPath, mode, viewerSessionChanges, cachedGitInfo);
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({ type: 'tree', mode, data: tree }));
-                        }
-                    } finally {
-                        freshDb.close();
-                    }
-                }
-                else if (msg.type === 'getSignature' && msg.file) {
-                    const freshDb = openDatabase(dbPath, true);
-                    try {
-                        const signature = await getFileSignature(freshDb.getDb(), msg.file);
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({ type: 'signature', file: msg.file, data: signature }));
-                        }
-                    } finally {
-                        freshDb.close();
-                    }
-                }
-                else if (msg.type === 'getFileContent' && msg.file) {
-                    const content = getFileContent(projectRoot, msg.file);
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'fileContent', file: msg.file, data: content }));
-                    }
-                }
-                else if (msg.type === 'getTasks') {
-                    const freshDb = openDatabase(dbPath, true);
-                    try {
-                        const taskData = getTasksFromDb(freshDb.getDb());
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({ type: 'tasks', data: taskData }));
-                        }
-                    } finally {
-                        freshDb.close();
-                    }
-                }
-                else if (msg.type === 'updateTaskStatus' && msg.taskId && msg.status) {
-                    const taskData = updateTaskStatus(msg.taskId as number, msg.status as string);
-                    if (taskData) broadcastTasks(taskData);
-                }
-                else if (msg.type === 'createTask' && msg.title) {
-                    const taskData = createTaskInDb(msg.title, msg.priority || 2, msg.tags || '', msg.description || '');
-                    if (taskData) broadcastTasks(taskData);
-                }
-                else if (msg.type === 'updateTask' && msg.taskId) {
-                    const fields: { title?: string; tags?: string } = {};
-                    if (msg.title !== undefined) fields.title = msg.title;
-                    if (msg.tags !== undefined) fields.tags = msg.tags;
-                    const taskData = updateTaskFields(msg.taskId as number, fields);
-                    if (taskData) broadcastTasks(taskData);
-                }
-                else if (msg.type === 'reorderTasks' && msg.taskIds) {
-                    const taskData = reorderTasks(msg.taskIds as number[]);
-                    if (taskData) broadcastTasks(taskData);
-                }
+                // Keep cachedGitInfo in sync (it can change between messages)
+                handlerCtx.cachedGitInfo = cachedGitInfo;
+                await dispatchMessage(ws, msg, handlerCtx);
             } catch (err) {
                 console.error('[Viewer] Error:', err);
                 if (ws.readyState === WebSocket.OPEN) {
@@ -635,178 +468,6 @@ const LANG_MAP: Record<string, string> = {
 
 function getLanguageFromExtension(filePath: string): string {
     return LANG_MAP[path.extname(filePath).toLowerCase()] || 'plaintext';
-}
-
-const TASKS_DDL = `
-    CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        description TEXT,
-        priority INTEGER NOT NULL DEFAULT 2 CHECK(priority IN (1, 2, 3)),
-        status TEXT NOT NULL DEFAULT 'backlog' CHECK(status IN ('backlog', 'active', 'done', 'cancelled')),
-        tags TEXT,
-        source TEXT,
-        sort_order INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        completed_at INTEGER
-    );
-`;
-
-const VALID_STATUSES = ['backlog', 'active', 'done', 'cancelled'] as const;
-
-function ensureTasksTable(db: Database.Database): void {
-    db.exec(TASKS_DDL);
-}
-
-/**
- * Get tasks from the database for the viewer
- */
-function getTasksFromDb(db: Database.Database): unknown[] {
-    try {
-        ensureTasksTable(db);
-        return db.prepare(
-            `SELECT * FROM tasks ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'backlog' THEN 1 WHEN 'done' THEN 2 WHEN 'cancelled' THEN 3 END, priority ASC, sort_order ASC, created_at DESC`
-        ).all();
-    } catch {
-        return [];
-    }
-}
-
-/**
- * Update a task's status from the viewer
- */
-function updateTaskStatus(taskId: number, status: string): unknown[] | null {
-    if (!(VALID_STATUSES as readonly string[]).includes(status) || !viewerDbPath) return null;
-
-    try {
-        const writeDb = openDatabase(viewerDbPath, false); // writable connection
-        const db = writeDb.getDb();
-        const now = Date.now();
-        const completedAt = (status === 'done' || status === 'cancelled') ? now : null;
-        db.prepare(
-            `UPDATE tasks SET status = ?, updated_at = ?, completed_at = ? WHERE id = ?`
-        ).run(status, now, completedAt, taskId);
-
-        // Auto-log status change
-        db.prepare(
-            `INSERT INTO task_log (task_id, note, created_at) VALUES (?, ?, ?)`
-        ).run(taskId, `Status changed to: ${status} (via Viewer)`, now);
-
-        // Read back tasks on same writable connection (guaranteed to see the write)
-        const taskData = getTasksFromDb(db);
-        writeDb.close();
-        return taskData;
-    } catch (err) {
-        console.error('[Viewer] Failed to update task status:', err);
-        return null;
-    }
-}
-
-/**
- * Update task fields (title, tags) from the viewer
- */
-function updateTaskFields(taskId: number, fields: { title?: string; tags?: string }): unknown[] | null {
-    if (!viewerDbPath) return null;
-
-    try {
-        const writeDb = openDatabase(viewerDbPath, false);
-        const db = writeDb.getDb();
-        const now = Date.now();
-        const updates: string[] = [];
-        const values: unknown[] = [];
-
-        if (fields.title !== undefined) {
-            updates.push('title = ?');
-            values.push(fields.title);
-        }
-        if (fields.tags !== undefined) {
-            updates.push('tags = ?');
-            values.push(fields.tags || null);
-        }
-
-        if (updates.length === 0) { writeDb.close(); return null; }
-
-        updates.push('updated_at = ?');
-        values.push(now);
-        values.push(taskId);
-
-        db.prepare(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-
-        const changes: string[] = [];
-        if (fields.title !== undefined) changes.push(`title: "${fields.title}"`);
-        if (fields.tags !== undefined) changes.push(`tags: "${fields.tags || ''}"`);
-        db.prepare(
-            `INSERT INTO task_log (task_id, note, created_at) VALUES (?, ?, ?)`
-        ).run(taskId, `Updated ${changes.join(', ')} (via Viewer)`, now);
-
-        const taskData = getTasksFromDb(db);
-        writeDb.close();
-        return taskData;
-    } catch (err) {
-        console.error('[Viewer] Failed to update task fields:', err);
-        return null;
-    }
-}
-
-/**
- * Create a new task from the viewer
- */
-function createTaskInDb(title: string, priority: number, tags: string, description: string): unknown[] | null {
-    if (!viewerDbPath) return null;
-
-    try {
-        const writeDb = openDatabase(viewerDbPath, false);
-        const db = writeDb.getDb();
-        const now = Date.now();
-
-        ensureTasksTable(db);
-
-        const result = db.prepare(
-            `INSERT INTO tasks (title, description, priority, status, tags, source, sort_order, created_at, updated_at)
-             VALUES (?, ?, ?, 'backlog', ?, 'viewer', 0, ?, ?)`
-        ).run(title, description || null, priority, tags || null, now, now);
-
-        // Auto-log creation
-        db.prepare(
-            `INSERT INTO task_log (task_id, note, created_at) VALUES (?, ?, ?)`
-        ).run(result.lastInsertRowid, 'Task created (via Viewer)', now);
-
-        const taskData = getTasksFromDb(db);
-        writeDb.close();
-        return taskData;
-    } catch (err) {
-        console.error('[Viewer] Failed to create task:', err);
-        return null;
-    }
-}
-
-/**
- * Reorder tasks by updating sort_order for a list of task IDs
- */
-function reorderTasks(taskIds: number[]): unknown[] | null {
-    if (!viewerDbPath || !taskIds.length) return null;
-
-    try {
-        const writeDb = openDatabase(viewerDbPath, false);
-        const db = writeDb.getDb();
-        const now = Date.now();
-        const stmt = db.prepare(`UPDATE tasks SET sort_order = ?, updated_at = ? WHERE id = ?`);
-
-        const transaction = db.transaction(() => {
-            taskIds.forEach((id, index) => {
-                stmt.run(index, now, id);
-            });
-        });
-        transaction();
-
-        const taskData = getTasksFromDb(db);
-        writeDb.close();
-        return taskData;
-    } catch (err) {
-        console.error('[Viewer] Failed to reorder tasks:', err);
-        return null;
-    }
 }
 
 /**

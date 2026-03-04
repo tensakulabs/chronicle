@@ -9,11 +9,11 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { minimatch } from 'minimatch';
-import { PRODUCT_NAME, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
 
 import { openDatabase, createQueries, type ChronicleDatabase, type Queries } from '../db/index.js';
 import { extract } from '../parser/index.js';
-import { DEFAULT_EXCLUDE, readGitignore, shortHash } from './init.js';
+import { shortHash } from './init.js';
+import { validateProjectIndex, normalizePath, DEFAULT_EXCLUDE, readGitignore } from '../utils/index.js';
 
 // ============================================================
 // Types
@@ -45,13 +45,11 @@ export function update(params: UpdateParams): UpdateResult {
     const startTime = Date.now();
     const { path: projectPath } = params;
     // Normalize path to forward slashes (consistent with how paths are stored)
-    const relativePath = params.file.replace(/\\/g, '/');
+    const relativePath = normalizePath(params.file);
 
     // Validate project path
-    const indexDir = join(projectPath, INDEX_DIR);
-    const dbPath = join(indexDir, 'index.db');
-
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             file: relativePath,
@@ -60,7 +58,7 @@ export function update(params: UpdateParams): UpdateResult {
             methodsUpdated: 0,
             typesUpdated: 0,
             durationMs: Date.now() - startTime,
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
@@ -99,7 +97,7 @@ export function update(params: UpdateParams): UpdateResult {
     }
 
     // Open database
-    const db = openDatabase(dbPath);
+    const db = openDatabase(validation.dbPath);
     const queries = createQueries(db);
 
     try {
@@ -313,23 +311,21 @@ export interface RemoveResult {
 export function remove(params: RemoveParams): RemoveResult {
     const { path: projectPath } = params;
     // Normalize path to forward slashes
-    const relativePath = params.file.replace(/\\/g, '/');
+    const relativePath = normalizePath(params.file);
 
     // Validate project path
-    const indexDir = join(projectPath, INDEX_DIR);
-    const dbPath = join(indexDir, 'index.db');
-
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             file: relativePath,
             removed: false,
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
     // Open database
-    const db = openDatabase(dbPath);
+    const db = openDatabase(validation.dbPath);
     const queries = createQueries(db);
 
     try {

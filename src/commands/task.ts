@@ -6,13 +6,11 @@
  * Completed tasks are preserved as documentation.
  */
 
-import { existsSync } from 'fs';
-import { join } from 'path';
-import { PRODUCT_NAME, INDEX_DIR, TOOL_PREFIX } from '../constants.js';
 import { openDatabase, createQueries } from '../db/index.js';
 import type { ChronicleDatabase } from '../db/index.js';
 import type { TaskRow, TaskLogRow } from '../db/index.js';
 import { broadcastTaskUpdate } from '../viewer/server.js';
+import { validateProjectIndex } from '../utils/index.js';
 
 // ============================================================
 // Types
@@ -127,16 +125,16 @@ function ensureTaskTables(db: ChronicleDatabase): void {
 export function task(params: TaskParams): TaskResult {
     const { path: projectPath, action } = params;
 
-    const dbPath = join(projectPath, INDEX_DIR, 'index.db');
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             action,
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
-    const db = openDatabase(dbPath, false);
+    const db = openDatabase(validation.dbPath, false);
 
     try {
         ensureTaskTables(db);
@@ -253,17 +251,17 @@ export function task(params: TaskParams): TaskResult {
 export function tasks(params: TasksParams): TasksResult {
     const { path: projectPath } = params;
 
-    const dbPath = join(projectPath, INDEX_DIR, 'index.db');
-    if (!existsSync(dbPath)) {
+    const validation = validateProjectIndex(projectPath);
+    if (!validation.valid) {
         return {
             success: false,
             tasks: [],
             total: 0,
-            error: `No ${PRODUCT_NAME} index found at ${projectPath}. Run ${TOOL_PREFIX}init first.`,
+            error: validation.error,
         };
     }
 
-    const db = openDatabase(dbPath, false);
+    const db = openDatabase(validation.dbPath, false);
 
     try {
         ensureTaskTables(db);

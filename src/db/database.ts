@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { METADATA_KEYS, STATS_TABLES, type StatsTable } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -41,8 +42,8 @@ export class ChronicleDatabase {
         const stmt = this.db.prepare(
             'INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)'
         );
-        stmt.run('schema_version', '1.0');
-        stmt.run('created_at', Date.now().toString());
+        stmt.run(METADATA_KEYS.SCHEMA_VERSION, '1.0');
+        stmt.run(METADATA_KEYS.CREATED_AT, Date.now().toString());
     }
 
     /**
@@ -133,25 +134,11 @@ export class ChronicleDatabase {
     /**
      * Get database statistics
      */
-    getStats(): {
-        files: number;
-        lines: number;
-        items: number;
-        occurrences: number;
-        methods: number;
-        types: number;
-        dependencies: number;
-        sizeBytes: number;
-    } {
-        const counts = {
-            files: (this.db.prepare('SELECT COUNT(*) as c FROM files').get() as { c: number }).c,
-            lines: (this.db.prepare('SELECT COUNT(*) as c FROM lines').get() as { c: number }).c,
-            items: (this.db.prepare('SELECT COUNT(*) as c FROM items').get() as { c: number }).c,
-            occurrences: (this.db.prepare('SELECT COUNT(*) as c FROM occurrences').get() as { c: number }).c,
-            methods: (this.db.prepare('SELECT COUNT(*) as c FROM methods').get() as { c: number }).c,
-            types: (this.db.prepare('SELECT COUNT(*) as c FROM types').get() as { c: number }).c,
-            dependencies: (this.db.prepare('SELECT COUNT(*) as c FROM dependencies').get() as { c: number }).c,
-        };
+    getStats(): Record<StatsTable, number> & { sizeBytes: number } {
+        const counts = {} as Record<StatsTable, number>;
+        for (const table of STATS_TABLES) {
+            counts[table] = (this.db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }).c;
+        }
 
         // Get file size
         const pragmaResult = this.db.pragma('page_count') as Array<{ page_count: number }>;
@@ -194,12 +181,12 @@ export function createDatabase(dbPath: string, projectName?: string, projectRoot
     }
 
     if (projectName) {
-        db.setMetadata('project_name', projectName);
+        db.setMetadata(METADATA_KEYS.PROJECT_NAME, projectName);
     }
     if (projectRoot) {
-        db.setMetadata('project_root', projectRoot);
+        db.setMetadata(METADATA_KEYS.PROJECT_ROOT, projectRoot);
     }
-    db.setMetadata('last_indexed', Date.now().toString());
+    db.setMetadata(METADATA_KEYS.LAST_INDEXED, Date.now().toString());
 
     return db;
 }

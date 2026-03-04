@@ -4,6 +4,8 @@
 
 export { ChronicleDatabase, openDatabase, createDatabase } from './database.js';
 export { Queries, createQueries } from './queries.js';
+
+// Types and constants from the shared types module
 export type {
     FileRow,
     LineRow,
@@ -13,6 +15,9 @@ export type {
     MethodRow,
     TypeRow,
     DependencyRow,
+    ProjectFileRow,
     TaskRow,
     TaskLogRow,
-} from './queries.js';
+    StatsTable,
+} from './types.js';
+export { METADATA_KEYS, STATS_TABLES } from './types.js';

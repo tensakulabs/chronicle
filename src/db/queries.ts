@@ -4,97 +4,33 @@
 
 import type Database from 'better-sqlite3';
 import type { ChronicleDatabase } from './database.js';
+import type {
+    FileRow,
+    LineRow,
+    ItemRow,
+    OccurrenceRow,
+    SignatureRow,
+    MethodRow,
+    TypeRow,
+    ProjectFileRow,
+    TaskRow,
+    TaskLogRow,
+} from './types.js';
 
-// ============================================================
-// Type definitions
-// ============================================================
-
-export interface FileRow {
-    id: number;
-    path: string;
-    hash: string;
-    last_indexed: number;
-}
-
-export interface LineRow {
-    id: number;
-    file_id: number;
-    line_number: number;
-    line_type: 'code' | 'comment' | 'struct' | 'method' | 'property' | 'string';
-    line_hash: string | null;
-    modified: number | null;
-}
-
-export interface ItemRow {
-    id: number;
-    term: string;
-}
-
-export interface OccurrenceRow {
-    item_id: number;
-    file_id: number;
-    line_id: number;
-}
-
-export interface SignatureRow {
-    file_id: number;
-    header_comments: string | null;
-}
-
-export interface MethodRow {
-    id: number;
-    file_id: number;
-    name: string;
-    prototype: string;
-    line_number: number;
-    visibility: string | null;
-    is_static: number;
-    is_async: number;
-}
-
-export interface TypeRow {
-    id: number;
-    file_id: number;
-    name: string;
-    kind: 'class' | 'struct' | 'interface' | 'enum' | 'type';
-    line_number: number;
-}
-
-export interface DependencyRow {
-    id: number;
-    path: string;
-    name: string | null;
-    last_checked: number | null;
-}
-
-export interface ProjectFileRow {
-    id: number;
-    path: string;
-    type: 'dir' | 'code' | 'config' | 'doc' | 'asset' | 'test' | 'other';
-    extension: string | null;
-    indexed: number;
-}
-
-export interface TaskRow {
-    id: number;
-    title: string;
-    description: string | null;
-    priority: 1 | 2 | 3;
-    status: 'backlog' | 'active' | 'done' | 'cancelled';
-    tags: string | null;
-    source: string | null;
-    sort_order: number;
-    created_at: number;
-    updated_at: number;
-    completed_at: number | null;
-}
-
-export interface TaskLogRow {
-    id: number;
-    task_id: number;
-    note: string;
-    created_at: number;
-}
+// Re-export types for backwards compatibility
+export type {
+    FileRow,
+    LineRow,
+    ItemRow,
+    OccurrenceRow,
+    SignatureRow,
+    MethodRow,
+    TypeRow,
+    DependencyRow,
+    ProjectFileRow,
+    TaskRow,
+    TaskLogRow,
+} from './types.js';
 
 // ============================================================
 // Query class with prepared statements
@@ -114,11 +50,9 @@ export class Queries {
     private _insertLine?: Database.Statement;
     private _getLinesByFile?: Database.Statement;
     private _deleteLinesByFile?: Database.Statement;
-    private _updateLineNumbers?: Database.Statement;
 
     private _insertItem?: Database.Statement;
     private _getItemByTerm?: Database.Statement;
-    private _getItemById?: Database.Statement;
     private _deleteUnusedItems?: Database.Statement;
 
     private _insertOccurrence?: Database.Statement;
@@ -211,13 +145,6 @@ export class Queries {
         this._deleteLinesByFile.run(fileId);
     }
 
-    updateLineNumbers(fileId: number, fromLine: number, offset: number): void {
-        this._updateLineNumbers ??= this.db.prepare(
-            'UPDATE lines SET line_number = line_number + ? WHERE file_id = ? AND line_number >= ?'
-        );
-        this._updateLineNumbers.run(offset, fileId, fromLine);
-    }
-
     // --------------------------------------------------------
     // Items
     // --------------------------------------------------------
@@ -243,13 +170,6 @@ export class Queries {
             'SELECT * FROM items WHERE term = ? COLLATE NOCASE'
         );
         return this._getItemByTerm.get(term) as ItemRow | undefined;
-    }
-
-    getItemById(id: number): ItemRow | undefined {
-        this._getItemById ??= this.db.prepare(
-            'SELECT * FROM items WHERE id = ?'
-        );
-        return this._getItemById.get(id) as ItemRow | undefined;
     }
 
     deleteUnusedItems(): number {
@@ -527,27 +447,33 @@ export class Queries {
     }
 
     updateTask(id: number, fields: Partial<Pick<TaskRow, 'title' | 'description' | 'priority' | 'status' | 'tags' | 'source' | 'sort_order'>>): boolean {
-        const ALLOWED_FIELDS = new Set(['title', 'description', 'status', 'priority', 'tags', 'source', 'sort_order', 'completed_at']);
+        const allowed = ['title', 'description', 'status', 'priority', 'tags', 'source', 'sort_order'] as const;
         const sets: string[] = [];
         const values: unknown[] = [];
-        for (const [key, value] of Object.entries(fields)) {
-            if (!ALLOWED_FIELDS.has(key)) continue;
-            sets.push(`${key} = ?`);
-            values.push(value);
+
+        for (const key of allowed) {
+            if (key in fields) {
+                sets.push(`${key} = ?`);
+                values.push(fields[key as keyof typeof fields]);
+            }
         }
         if (sets.length === 0) return false;
+
+        const now = Date.now();
         sets.push('updated_at = ?');
-        values.push(Date.now());
+        values.push(now);
+
+        // Auto-manage completed_at based on status transitions
         if (fields.status === 'done') {
             sets.push('completed_at = ?');
-            values.push(Date.now());
+            values.push(now);
         } else if (fields.status === 'active' || fields.status === 'backlog') {
             sets.push('completed_at = ?');
             values.push(null);
         }
+
         values.push(id);
-        const sql = `UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`;
-        const result = this.db.prepare(sql).run(...values);
+        const result = this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values);
         return result.changes > 0;
     }
 

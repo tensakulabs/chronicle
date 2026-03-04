@@ -10,10 +10,10 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { minimatch } from 'minimatch';
 
-import { openDatabase, createQueries, type ChronicleDatabase, type Queries } from '../db/index.js';
-import { extract } from '../parser/index.js';
+import { openDatabase, createQueries } from '../db/index.js';
 import { shortHash } from './init.js';
 import { validateProjectIndex, normalizePath, DEFAULT_EXCLUDE, readGitignore } from '../utils/index.js';
+import { indexFileContent, type IndexFileContentResult } from './index-file.js';
 
 // ============================================================
 // Types
@@ -138,36 +138,13 @@ export function update(params: UpdateParams): UpdateResult {
             };
         }
 
-        // Extract data from file
-        const extraction = extract(content, relativePath);
-        if (!extraction) {
-            return {
-                success: false,
-                file: relativePath,
-                itemsAdded: 0,
-                itemsRemoved: 0,
-                methodsUpdated: 0,
-                typesUpdated: 0,
-                durationMs: Date.now() - startTime,
-                error: 'Unsupported file type or parse error',
-            };
-        }
-
         // Count old items for comparison
         let oldItemCount = 0;
-        let oldMethodCount = 0;
-        let oldTypeCount = 0;
 
         if (existingFile) {
             const oldOccurrences = queries.getOccurrencesByFile(existingFile.id);
             oldItemCount = new Set(oldOccurrences.map(o => o.item_id)).size;
-            oldMethodCount = queries.getMethodsByFile(existingFile.id).length;
-            oldTypeCount = queries.getTypesByFile(existingFile.id).length;
         }
-
-        // Split content into lines for hashing
-        const contentLines = content.split('\n');
-        const now = Date.now();
 
         // Build map of old line hashes to modified timestamps (for diff tracking)
         // Key is the hash, not line_number - so moved lines keep their timestamp
@@ -187,7 +164,7 @@ export function update(params: UpdateParams): UpdateResult {
 
         // Perform update in transaction
         let fileId: number;
-        let newItemCount = 0;
+        let result: IndexFileContentResult;
 
         db.transaction(() => {
             if (existingFile) {
@@ -202,66 +179,29 @@ export function update(params: UpdateParams): UpdateResult {
                 fileId = queries.insertFile(relativePath, newHash);
             }
 
-            // Insert lines and capture DB-assigned IDs (AUTOINCREMENT)
-            const lineNumberToId = new Map<number, number>();
-            for (const line of extraction.lines) {
-                const lineContent = contentLines[line.lineNumber - 1] ?? '';
-                const lineHash = shortHash(lineContent);
-
-                // Check if this hash existed before (regardless of line number)
-                const oldModified = oldHashToModified.get(lineHash);
-                const modified = oldModified ?? now;  // Keep old timestamp if hash existed
-
-                const dbLineId = queries.insertLine(fileId, line.lineNumber, line.lineType, lineHash, modified);
-                lineNumberToId.set(line.lineNumber, dbLineId);
-            }
-
-            // Insert items and occurrences
-            const itemsInserted = new Set<string>();
-            for (const item of extraction.items) {
-                let itemLineId = lineNumberToId.get(item.lineNumber);
-                if (itemLineId === undefined) {
-                    // Line wasn't recorded, add it now
-                    const lineContent = contentLines[item.lineNumber - 1] ?? '';
-                    const lineHash = shortHash(lineContent);
-
-                    const oldModified = oldHashToModified.get(lineHash);
-                    const modified = oldModified ?? now;
-
-                    const newLineId = queries.insertLine(fileId, item.lineNumber, item.lineType, lineHash, modified);
-                    lineNumberToId.set(item.lineNumber, newLineId);
-                    itemLineId = newLineId;
-                }
-
-                const itemId = queries.getOrCreateItem(item.term);
-                queries.insertOccurrence(itemId, fileId, itemLineId);
-                itemsInserted.add(item.term);
-            }
-            newItemCount = itemsInserted.size;
-
-            // Insert methods
-            for (const method of extraction.methods) {
-                queries.insertMethod(
-                    fileId,
-                    method.name,
-                    method.prototype,
-                    method.lineNumber,
-                    method.visibility,
-                    method.isStatic,
-                    method.isAsync
-                );
-            }
-
-            // Insert types
-            for (const type of extraction.types) {
-                queries.insertType(fileId, type.name, type.kind, type.lineNumber);
-            }
-
-            // Insert signature (header comments)
-            if (extraction.headerComments.length > 0) {
-                queries.insertSignature(fileId, extraction.headerComments.join('\n'));
-            }
+            // Delegate extraction and insertion to shared function
+            result = indexFileContent({
+                fileId,
+                content,
+                relativePath,
+                queries,
+                oldHashToModified,
+            });
         });
+
+        if (!result!.success) {
+            db.close();
+            return {
+                success: false,
+                file: relativePath,
+                itemsAdded: 0,
+                itemsRemoved: 0,
+                methodsUpdated: 0,
+                typesUpdated: 0,
+                durationMs: Date.now() - startTime,
+                error: result!.error,
+            };
+        }
 
         // Cleanup unused items
         queries.deleteUnusedItems();
@@ -271,10 +211,10 @@ export function update(params: UpdateParams): UpdateResult {
         return {
             success: true,
             file: relativePath,
-            itemsAdded: Math.max(0, newItemCount - oldItemCount),
-            itemsRemoved: Math.max(0, oldItemCount - newItemCount),
-            methodsUpdated: extraction.methods.length,
-            typesUpdated: extraction.types.length,
+            itemsAdded: Math.max(0, result!.items - oldItemCount),
+            itemsRemoved: Math.max(0, oldItemCount - result!.items),
+            methodsUpdated: result!.methods,
+            typesUpdated: result!.types,
             durationMs: Date.now() - startTime,
         };
     } catch (err) {

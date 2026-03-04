@@ -189,20 +189,6 @@ export function update(params: UpdateParams): UpdateResult {
             });
         });
 
-        if (!result!.success) {
-            db.close();
-            return {
-                success: false,
-                file: relativePath,
-                itemsAdded: 0,
-                itemsRemoved: 0,
-                methodsUpdated: 0,
-                typesUpdated: 0,
-                durationMs: Date.now() - startTime,
-                error: result!.error,
-            };
-        }
-
         // Cleanup unused items
         queries.deleteUnusedItems();
 

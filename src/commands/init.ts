@@ -361,5 +361,17 @@ function indexFile(
     const fileId = queries.insertFile(relativePath, hash);
 
     // Delegate extraction and insertion to shared function
-    return indexFileContent({ fileId, content, relativePath, queries });
+    try {
+        return indexFileContent({ fileId, content, relativePath, queries });
+    } catch (err) {
+        // Extraction failed — remove orphaned file row to avoid partial state
+        queries.deleteFile(fileId);
+        return {
+            success: false,
+            items: 0,
+            methods: 0,
+            types: 0,
+            error: err instanceof Error ? err.message : String(err),
+        };
+    }
 }

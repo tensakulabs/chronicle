@@ -68,13 +68,7 @@ export function indexFileContent(params: IndexFileContentParams): IndexFileConte
     // Extract data from file
     const extraction = extract(content, relativePath);
     if (!extraction) {
-        return {
-            success: false,
-            items: 0,
-            methods: 0,
-            types: 0,
-            error: 'Unsupported file type or parse error',
-        };
+        throw new Error('Unsupported file type or parse error');
     }
 
     // Split content into lines for hashing

@@ -23,98 +23,42 @@ export interface LanguageConfig {
     propertyNodes?: Set<string>;
 }
 
+/** Helper to build a LanguageConfig from a language module's exports. */
+function cfg(
+    mod: { isKeyword: (term: string) => boolean },
+    identifierNodes: Set<string>,
+    commentNodes: Set<string>,
+    methodNodes: Set<string>,
+    typeNodes: Set<string>,
+    propertyNodes?: Set<string>,
+): LanguageConfig {
+    const config: LanguageConfig = { isKeyword: mod.isKeyword, identifierNodes, commentNodes, methodNodes, typeNodes };
+    if (propertyNodes) config.propertyNodes = propertyNodes;
+    return config;
+}
+
+const tsConfig = cfg(typescript, typescript.TYPESCRIPT_IDENTIFIER_NODES, typescript.TYPESCRIPT_COMMENT_NODES, typescript.TYPESCRIPT_METHOD_NODES, typescript.TYPESCRIPT_TYPE_NODES);
+
 const configs: Record<SupportedLanguage, LanguageConfig> = {
-    csharp: {
-        isKeyword: csharp.isKeyword,
-        identifierNodes: csharp.CSHARP_IDENTIFIER_NODES,
-        commentNodes: csharp.CSHARP_COMMENT_NODES,
-        methodNodes: csharp.CSHARP_METHOD_NODES,
-        typeNodes: csharp.CSHARP_TYPE_NODES,
-        propertyNodes: csharp.CSHARP_PROPERTY_NODES,
-    },
-    typescript: {
-        isKeyword: typescript.isKeyword,
-        identifierNodes: typescript.TYPESCRIPT_IDENTIFIER_NODES,
-        commentNodes: typescript.TYPESCRIPT_COMMENT_NODES,
-        methodNodes: typescript.TYPESCRIPT_METHOD_NODES,
-        typeNodes: typescript.TYPESCRIPT_TYPE_NODES,
-    },
-    javascript: {
-        // JavaScript uses same config as TypeScript
-        isKeyword: typescript.isKeyword,
-        identifierNodes: typescript.TYPESCRIPT_IDENTIFIER_NODES,
-        commentNodes: typescript.TYPESCRIPT_COMMENT_NODES,
-        methodNodes: typescript.TYPESCRIPT_METHOD_NODES,
-        typeNodes: typescript.TYPESCRIPT_TYPE_NODES,
-    },
-    rust: {
-        isKeyword: rust.isKeyword,
-        identifierNodes: rust.RUST_IDENTIFIER_NODES,
-        commentNodes: rust.RUST_COMMENT_NODES,
-        methodNodes: rust.RUST_METHOD_NODES,
-        typeNodes: rust.RUST_TYPE_NODES,
-    },
-    python: {
-        isKeyword: python.isKeyword,
-        identifierNodes: python.PYTHON_IDENTIFIER_NODES,
-        commentNodes: python.PYTHON_COMMENT_NODES,
-        methodNodes: python.PYTHON_METHOD_NODES,
-        typeNodes: python.PYTHON_TYPE_NODES,
-    },
-    c: {
-        isKeyword: c.isKeyword,
-        identifierNodes: c.C_IDENTIFIER_NODES,
-        commentNodes: c.C_COMMENT_NODES,
-        methodNodes: c.C_METHOD_NODES,
-        typeNodes: c.C_TYPE_NODES,
-    },
-    cpp: {
-        isKeyword: cpp.isKeyword,
-        identifierNodes: cpp.CPP_IDENTIFIER_NODES,
-        commentNodes: cpp.CPP_COMMENT_NODES,
-        methodNodes: cpp.CPP_METHOD_NODES,
-        typeNodes: cpp.CPP_TYPE_NODES,
-    },
-    java: {
-        isKeyword: java.isKeyword,
-        identifierNodes: java.JAVA_IDENTIFIER_NODES,
-        commentNodes: java.JAVA_COMMENT_NODES,
-        methodNodes: java.JAVA_METHOD_NODES,
-        typeNodes: java.JAVA_TYPE_NODES,
-    },
-    go: {
-        isKeyword: go.isKeyword,
-        identifierNodes: go.GO_IDENTIFIER_NODES,
-        commentNodes: go.GO_COMMENT_NODES,
-        methodNodes: go.GO_METHOD_NODES,
-        typeNodes: go.GO_TYPE_NODES,
-    },
-    php: {
-        isKeyword: php.isKeyword,
-        identifierNodes: php.PHP_IDENTIFIER_NODES,
-        commentNodes: php.PHP_COMMENT_NODES,
-        methodNodes: php.PHP_METHOD_NODES,
-        typeNodes: php.PHP_TYPE_NODES,
-    },
-    ruby: {
-        isKeyword: ruby.isKeyword,
-        identifierNodes: ruby.RUBY_IDENTIFIER_NODES,
-        commentNodes: ruby.RUBY_COMMENT_NODES,
-        methodNodes: ruby.RUBY_METHOD_NODES,
-        typeNodes: ruby.RUBY_TYPE_NODES,
-    },
+    csharp: cfg(csharp, csharp.CSHARP_IDENTIFIER_NODES, csharp.CSHARP_COMMENT_NODES, csharp.CSHARP_METHOD_NODES, csharp.CSHARP_TYPE_NODES, csharp.CSHARP_PROPERTY_NODES),
+    typescript: tsConfig,
+    javascript: tsConfig,
+    rust: cfg(rust, rust.RUST_IDENTIFIER_NODES, rust.RUST_COMMENT_NODES, rust.RUST_METHOD_NODES, rust.RUST_TYPE_NODES),
+    python: cfg(python, python.PYTHON_IDENTIFIER_NODES, python.PYTHON_COMMENT_NODES, python.PYTHON_METHOD_NODES, python.PYTHON_TYPE_NODES),
+    c: cfg(c, c.C_IDENTIFIER_NODES, c.C_COMMENT_NODES, c.C_METHOD_NODES, c.C_TYPE_NODES),
+    cpp: cfg(cpp, cpp.CPP_IDENTIFIER_NODES, cpp.CPP_COMMENT_NODES, cpp.CPP_METHOD_NODES, cpp.CPP_TYPE_NODES),
+    java: cfg(java, java.JAVA_IDENTIFIER_NODES, java.JAVA_COMMENT_NODES, java.JAVA_METHOD_NODES, java.JAVA_TYPE_NODES),
+    go: cfg(go, go.GO_IDENTIFIER_NODES, go.GO_COMMENT_NODES, go.GO_METHOD_NODES, go.GO_TYPE_NODES),
+    php: cfg(php, php.PHP_IDENTIFIER_NODES, php.PHP_COMMENT_NODES, php.PHP_METHOD_NODES, php.PHP_TYPE_NODES),
+    ruby: cfg(ruby, ruby.RUBY_IDENTIFIER_NODES, ruby.RUBY_COMMENT_NODES, ruby.RUBY_METHOD_NODES, ruby.RUBY_TYPE_NODES),
 };
 
-/**
- * Get language configuration
- */
+/** Get language configuration */
 export function getLanguageConfig(language: SupportedLanguage): LanguageConfig {
     return configs[language];
 }
 
-/**
- * Check if a term is a keyword for the given language
- */
+/** Check if a term is a keyword for the given language */
 export function isKeyword(term: string, language: SupportedLanguage): boolean {
     return configs[language].isKeyword(term);
 }

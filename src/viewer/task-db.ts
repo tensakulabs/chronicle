@@ -70,7 +70,7 @@ export function updateTaskStatus(dbPath: string, taskId: number, status: string)
             const now = Date.now();
             const completedAt = (status === 'done' || status === 'cancelled') ? now : null;
             db.prepare(
-                `UPDATE tasks SET status = ?, updated_at = ?, completed_at = COALESCE(?, completed_at) WHERE id = ?`
+                `UPDATE tasks SET status = ?, updated_at = ?, completed_at = ? WHERE id = ?`
             ).run(status, now, completedAt, taskId);
 
             db.prepare(

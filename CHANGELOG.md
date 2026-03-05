@@ -2,6 +2,19 @@
 
 All notable changes to Chronicle will be documented in this file.
 
+## [0.1.3] - 2026-03-05
+
+### Viewer
+- **Task filtering**: Multi-select dropdown filter by tag and status with active filter pills
+- **Inline editing**: Click-to-edit task titles and tags
+- **Group by tag**: Collapsible tag sections toggle
+- **Status labels**: "active" displays as "In Progress", action buttons for all statuses
+- **Drag-and-drop**: Task resequencing within status groups
+
+### Changed
+- **Decomposed server.ts**: Extracted inline CSS (1859 lines) and JS (1345 lines) into separate `viewer.css` and `viewer-client.js` files, reducing server.ts from 4322 to 1064 lines
+- **Code quality**: Added `broadcastTasks()` helper, `LANG_MAP` constant, `TASKS_DDL` constant, `ensureTasksTable()` helper, `VALID_STATUSES` constant
+
 ## [0.1.1] - 2026-03-02
 
 ### Changed

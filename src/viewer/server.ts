@@ -166,11 +166,17 @@ export async function startViewer(projectPath: string): Promise<string> {
     };
 
     // Use chokidar for reliable cross-platform file watching
+    // Function-based ignore for O(1) directory pruning — glob patterns don't prevent
+    // chokidar from opening directory handles, which causes EMFILE on large repos.
+    const excludedDirNames = new Set(
+        EXCLUDED_DIRS.filter(d => !d.includes('*') && !d.includes('[') && !d.includes('/'))
+    );
+    excludedDirNames.add(INDEX_DIR);
     fileWatcher = chokidar.watch(projectRoot, {
-        ignored: [
-            ...EXCLUDED_DIRS.flatMap(d => [`**/${d}`, `**/${d}/**`]),
-            `**/${INDEX_DIR}/**`,
-        ],
+        ignored: (filePath: string) => {
+            const name = path.basename(filePath);
+            return excludedDirNames.has(name);
+        },
         ignoreInitial: true,
         persistent: true,
         usePolling: false,

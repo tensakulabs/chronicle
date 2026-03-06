@@ -83,7 +83,7 @@
         }
         count(tree);
         var el = document.getElementById('header-stats');
-        if (el) el.textContent = fileCount + ' files \\u00b7 ' + Object.keys(langs).length + ' lang';
+        if (el) el.textContent = fileCount + ' files \u00b7 ' + Object.keys(langs).length + ' lang';
 
         var changedCount = 0;
         function countChanged(node) {

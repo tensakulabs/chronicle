@@ -261,6 +261,17 @@
             headerBar.classList.remove('hidden');
         }
 
+        // Clear previous content and show loading state
+        var sigContent = document.getElementById('sig-content');
+        var sigEmpty = document.getElementById('sig-empty-state');
+        var sourceView = document.getElementById('source-view');
+        if (sigContent) sigContent.classList.add('hidden');
+        if (sigEmpty) {
+            sigEmpty.querySelector('.empty-state-label').textContent = 'Loading...';
+            sigEmpty.classList.remove('hidden');
+        }
+        if (sourceView) sourceView.innerHTML = '';
+
         // Switch to signatures tab when file selected
         switchTab('signatures');
 
@@ -350,6 +361,16 @@
             } else {
                 methodsSection.classList.add('hidden');
             }
+        }
+
+        // Empty state: no header, no types, no methods
+        var hasContent = (data.header) ||
+            (data.types && data.types.length > 0) ||
+            (data.methods && data.methods.length > 0);
+        if (!hasContent) {
+            emptyState.querySelector('.empty-state-label').textContent = 'No signatures found for this file';
+            emptyState.classList.remove('hidden');
+            content.classList.add('hidden');
         }
 
         // Stat pills

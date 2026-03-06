@@ -52,7 +52,6 @@ interface TreeNode {
     fileType?: string;  // code, config, doc, asset, test, other
     children?: TreeNode[];
     stats?: {
-        items: number;
         methods: number;
         types: number;
     };
@@ -441,21 +440,17 @@ async function buildTree(
     sessionChanges: SessionChangeInfo,
     gitInfo?: GitStatusInfo
 ): Promise<TreeNode> {
-    let files: Array<{ path: string; items: number; methods: number; types: number; fileType?: string }>;
+    let files: Array<{ path: string; methods: number; types: number; fileType?: string }>;
 
     if (mode === 'code') {
-        // Only indexed code files (original behavior)
+        // Only indexed code files — fast query using correlated subqueries (no occurrence join)
         files = db.prepare(`
             SELECT f.path,
-                   COUNT(DISTINCT o.item_id) as items,
                    (SELECT COUNT(*) FROM methods m WHERE m.file_id = f.id) as methods,
                    (SELECT COUNT(*) FROM types t WHERE t.file_id = f.id) as types
             FROM files f
-            LEFT JOIN lines l ON l.file_id = f.id
-            LEFT JOIN occurrences o ON o.file_id = f.id AND o.line_id = l.id
-            GROUP BY f.id
             ORDER BY f.path
-        `).all() as Array<{ path: string; items: number; methods: number; types: number }>;
+        `).all() as Array<{ path: string; methods: number; types: number }>;
     } else {
         // All project files from project_files table
         const projectFiles = db.prepare(`
@@ -463,26 +458,21 @@ async function buildTree(
         `).all() as Array<{ path: string; fileType: string }>;
 
         // Get stats for indexed files
-        const statsMap = new Map<string, { items: number; methods: number; types: number }>();
+        const statsMap = new Map<string, { methods: number; types: number }>();
         const indexedStats = db.prepare(`
             SELECT f.path,
-                   COUNT(DISTINCT o.item_id) as items,
                    (SELECT COUNT(*) FROM methods m WHERE m.file_id = f.id) as methods,
                    (SELECT COUNT(*) FROM types t WHERE t.file_id = f.id) as types
             FROM files f
-            LEFT JOIN lines l ON l.file_id = f.id
-            LEFT JOIN occurrences o ON o.file_id = f.id AND o.line_id = l.id
-            GROUP BY f.id
-        `).all() as Array<{ path: string; items: number; methods: number; types: number }>;
+        `).all() as Array<{ path: string; methods: number; types: number }>;
 
         for (const stat of indexedStats) {
-            statsMap.set(stat.path, { items: stat.items, methods: stat.methods, types: stat.types });
+            statsMap.set(stat.path, { methods: stat.methods, types: stat.types });
         }
 
         files = projectFiles.map(f => ({
             path: f.path,
             fileType: f.fileType,
-            items: statsMap.get(f.path)?.items || 0,
             methods: statsMap.get(f.path)?.methods || 0,
             types: statsMap.get(f.path)?.types || 0
         }));
@@ -513,7 +503,7 @@ async function buildTree(
                     type: isFile ? 'file' : 'dir',
                     fileType: isFile ? file.fileType : undefined,
                     children: isFile ? undefined : [],
-                    stats: isFile ? { items: file.items, methods: file.methods, types: file.types } : undefined,
+                    stats: isFile ? { methods: file.methods, types: file.types } : undefined,
                     status: isFile ? getFileStatus(file.path, sessionChanges) : undefined,
                     gitStatus: isFile && gitInfo?.isGitRepo ? getGitFileStatus(file.path, gitInfo) : undefined
                 };

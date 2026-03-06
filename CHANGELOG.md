@@ -2,6 +2,14 @@
 
 All notable changes to Chronicle will be documented in this file.
 
+## [0.1.4] - 2026-03-06
+
+### Performance
+- **100x faster init on large monorepos**: Replaced `glob('**/*')` with single-pass directory walk using O(1) Set lookups for excluded directories. A 148K-file monorepo that previously hung for 25+ minutes now indexes in ~16 seconds.
+- **Fixed gitignore negation bug**: Negation patterns like `!.env.example` were being converted to minimatch patterns that matched everything, causing all directories to be excluded.
+- **Single filesystem walk**: Merged two separate glob traversals (source files + project files) into one pass.
+- **CLI progress logging**: Init now shows real-time progress on stderr (`[1/3] Scanning...`, `[2/3] Indexing...`, etc.) when run from CLI.
+
 ## [0.1.3] - 2026-03-05
 
 ### Viewer

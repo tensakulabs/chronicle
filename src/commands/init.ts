@@ -2,9 +2,8 @@
  * init command - Initialize Chronicle for a project
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, statSync, readdirSync } from 'fs';
 import { join, relative, basename, extname } from 'path';
-import { glob } from 'glob';
 import { createHash } from 'crypto';
 import { minimatch } from 'minimatch';
 import { INDEX_DIR } from '../constants.js';
@@ -49,42 +48,24 @@ export interface InitResult {
 // Default patterns
 // ============================================================
 
+// Directory patterns that should prevent glob from descending into them.
+// Each entry generates both '**/name' (matches the dir) and '**/name/**' (matches contents).
+const EXCLUDED_DIRS = [
+    'node_modules', 'packages', 'vendor', 'vendor/bundle',
+    'bin', 'obj', 'bld', 'build', 'dist', 'out', 'target',
+    'Debug', 'Release', 'x64', 'x86',
+    '[Aa][Rr][Mm]', '[Aa][Rr][Mm]64',
+    '__pycache__', 'venv', '.venv', 'env', '*.egg-info',
+    '.git', '.vs', '.idea', '.vscode',
+    '.next', 'coverage', 'tmp',
+];
+
 export const DEFAULT_EXCLUDE = [
-    // Package managers
-    '**/node_modules/**',
-    '**/packages/**',
-    '**/vendor/**',          // PHP Composer, Go
-    '**/vendor/bundle/**',   // Ruby Bundler
-    // Build output
-    '**/bin/**',
-    '**/obj/**',
-    '**/bld/**',             // Alternative build folder
-    '**/build/**',
-    '**/dist/**',
-    '**/out/**',             // VS Code, some TS configs
-    '**/target/**',          // Rust, Maven
-    '**/Debug/**',           // Visual Studio
-    '**/Release/**',         // Visual Studio
-    '**/x64/**',             // Visual Studio
-    '**/x86/**',             // Visual Studio
-    '**/[Aa][Rr][Mm]/**',    // Visual Studio ARM
-    '**/[Aa][Rr][Mm]64/**',  // Visual Studio ARM64
-    '**/__pycache__/**',     // Python
+    // Directory excludes: both the dir itself and its contents
+    // Matching the dir prevents glob from descending into it (walk pruning)
+    ...EXCLUDED_DIRS.flatMap(d => [`**/${d}`, `**/${d}/**`]),
+    // File pattern excludes
     '**/.pyc',               // Python bytecode
-    '**/venv/**',            // Python virtual env
-    '**/.venv/**',           // Python virtual env
-    '**/env/**',             // Python virtual env
-    '**/*.egg-info/**',      // Python package metadata
-    // IDE/Editor
-    '**/.git/**',
-    '**/.vs/**',
-    '**/.idea/**',
-    '**/.vscode/**',
-    // Framework-specific
-    '**/.next/**',           // Next.js
-    '**/coverage/**',        // Test coverage
-    '**/tmp/**',             // Ruby, temp files
-    // Generated files
     '**/*.min.js',
     '**/*.generated.*',
     '**/*.g.cs',             // C# source generators
@@ -103,7 +84,7 @@ export function readGitignore(projectPath: string): string[] {
     return content
         .split('\n')
         .map(line => line.trim())
-        .filter(line => line && !line.startsWith('#'))  // Keine Kommentare/Leerzeilen
+        .filter(line => line && !line.startsWith('#') && !line.startsWith('!'))  // Skip comments, empty lines, and negation patterns
         .map(pattern => {
             // Glob-kompatibel machen
             if (pattern.endsWith('/')) {
@@ -222,28 +203,69 @@ export async function init(params: InitParams): Promise<InitResult> {
     const db = createDatabase(dbPath, projectName, params.path, incremental);
     const queries = createQueries(db);
 
-    // Build glob pattern for supported files
-    const extensions = getSupportedExtensions();
-    const patterns = extensions.map(ext => `**/*${ext}`);
-
     // Merge exclude patterns (including .gitignore)
     const gitignorePatterns = readGitignore(params.path);
     const exclude = [...DEFAULT_EXCLUDE, ...gitignorePatterns, ...(params.exclude ?? [])];
 
-    // Find all source files
+    // Progress logging (CLI only, not MCP)
+    const isCLI = !process.env.MCP_TRANSPORT;
+    const log = (msg: string) => { if (isCLI) process.stderr.write(`\r\x1b[K${msg}`); };
+
+    // --------------------------------------------------------
+    // Single-pass directory walk: collect source files AND project files together.
+    // This replaces both the glob('**/*.ext') call for source files and the
+    // glob('**/*') call for project_files — one walk instead of two.
+    // --------------------------------------------------------
+    log(`[1/3] Scanning project tree...`);
+    const supportedExtensions = new Set(getSupportedExtensions());
     let files: string[] = [];
-    for (const pattern of patterns) {
-        const found = await glob(pattern, {
-            cwd: params.path,
-            ignore: exclude,
-            nodir: true,
-            absolute: false,
-        });
-        files.push(...found);
+    const allProjectFiles: string[] = [];
+    const projectDirs = new Set<string>();
+
+    // Fast exclusion: O(1) Set lookup for plain directory names
+    const excludedDirNames = new Set(
+        EXCLUDED_DIRS.filter(d => !d.includes('*') && !d.includes('[') && !d.includes('/'))
+    );
+    // Pre-compile complex patterns for slow-path matching
+    const { Minimatch } = await import('minimatch');
+    const compiledExcludePatterns = exclude.map(p => new Minimatch(p, { dot: true }));
+
+    function walkTree(baseDir: string, relPath: string): void {
+        let entries;
+        try {
+            entries = readdirSync(join(baseDir, relPath), { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            // Fast path: skip excluded directory names via Set lookup
+            if (entry.isDirectory() && excludedDirNames.has(entry.name)) continue;
+
+            const entryRelPath = relPath ? `${relPath}/${entry.name}` : entry.name;
+
+            // Slow path: check complex patterns only if needed
+            if (compiledExcludePatterns.some(m => m.match(entryRelPath))) continue;
+
+            if (entry.isDirectory()) {
+                projectDirs.add(entryRelPath);
+                walkTree(baseDir, entryRelPath);
+            } else if (entry.isFile()) {
+                allProjectFiles.push(entryRelPath);
+                // Check if this is a supported source file
+                const ext = extname(entry.name).toLowerCase();
+                if (supportedExtensions.has(ext)) {
+                    files.push(entryRelPath);
+                }
+                if (allProjectFiles.length % 500 === 0) {
+                    log(`[1/3] Scanning... ${files.length} source, ${allProjectFiles.length} total files`);
+                }
+            }
+        }
     }
 
-    // Remove duplicates, normalize to forward slashes, and sort
-    files = [...new Set(files)].map(f => f.replace(/\\/g, '/')).sort();
+    walkTree(params.path, '');
+    files.sort();
+    log(`[1/3] Found ${files.length} source files, ${allProjectFiles.length} total files\n`);
 
     // Index each file
     let filesIndexed = 0;
@@ -253,6 +275,7 @@ export async function init(params: InitParams): Promise<InitResult> {
     let totalTypes = 0;
 
     // Use transaction for bulk insert
+    log(`[2/3] Indexing source files...`);
     db.transaction(() => {
         for (const filePath of files) {
             try {
@@ -264,6 +287,9 @@ export async function init(params: InitParams): Promise<InitResult> {
                     totalItems += result.items;
                     totalMethods += result.methods;
                     totalTypes += result.types;
+                    if (filesIndexed % 100 === 0) {
+                        log(`[2/3] Indexing... ${filesIndexed}/${files.length} files`);
+                    }
                 } else if (result.error) {
                     errors.push(`${filePath}: ${result.error}`);
                 }
@@ -305,38 +331,16 @@ export async function init(params: InitParams): Promise<InitResult> {
     }
 
     // --------------------------------------------------------
-    // Scan project structure (all files, not just code)
+    // Write project structure to DB (already collected during walk)
     // --------------------------------------------------------
-    const indexedFilesSet = new Set(files);  // Code files we indexed
+    log(`[3/3] Writing project structure to DB...`);
+    const indexedFilesSet = new Set(files);
 
-    // Find ALL files in project
-    const allFiles = await glob('**/*', {
-        cwd: params.path,
-        ignore: exclude,
-        nodir: true,
-        absolute: false,
-    });
-
-    // Normalize paths and collect directories
-    const directories = new Set<string>();
-    const normalizedAllFiles = allFiles.map(f => f.replace(/\\/g, '/'));
-
-    for (const filePath of normalizedAllFiles) {
-        // Extract all parent directories
-        const parts = filePath.split('/');
-        for (let i = 1; i < parts.length; i++) {
-            directories.add(parts.slice(0, i).join('/'));
-        }
-    }
-
-    // Insert directories
     db.transaction(() => {
-        for (const dir of directories) {
+        for (const dir of projectDirs) {
             queries.insertProjectFile(dir, 'dir', null, false);
         }
-
-        // Insert all files with type detection
-        for (const filePath of normalizedAllFiles) {
+        for (const filePath of allProjectFiles) {
             const ext = extname(filePath).toLowerCase() || null;
             const fileType = detectFileType(filePath);
             const isIndexed = indexedFilesSet.has(filePath);
@@ -349,6 +353,8 @@ export async function init(params: InitParams): Promise<InitResult> {
     db.setMetadata('last_session_start', now);
     db.setMetadata('last_session_end', now);
     db.setMetadata('current_session_start', now);
+
+    log(`[3/3] Done. ${allProjectFiles.length} files, ${projectDirs.size} dirs\n`);
 
     db.close();
 

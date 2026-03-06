@@ -264,13 +264,18 @@
         // Clear previous content and show loading state
         var sigContent = document.getElementById('sig-content');
         var sigEmpty = document.getElementById('sig-empty-state');
-        var sourceView = document.getElementById('source-view');
         if (sigContent) sigContent.classList.add('hidden');
         if (sigEmpty) {
             sigEmpty.querySelector('.empty-state-label').textContent = 'Loading...';
             sigEmpty.classList.remove('hidden');
         }
-        if (sourceView) sourceView.innerHTML = '';
+        var srcContainer = document.getElementById('src-code-container');
+        var srcEmpty = document.getElementById('src-empty-state');
+        if (srcContainer) srcContainer.classList.add('hidden');
+        if (srcEmpty) {
+            srcEmpty.querySelector('.empty-state-label').textContent = 'Loading...';
+            srcEmpty.classList.remove('hidden');
+        }
 
         // Switch to signatures tab when file selected
         switchTab('signatures');

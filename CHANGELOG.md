@@ -2,6 +2,19 @@
 
 All notable changes to Chronicle will be documented in this file.
 
+## [0.1.7] - 2026-03-06
+
+### Viewer
+- **135x faster tree loading on large repos**: Removed expensive occurrence JOIN from tree query (10s → 74ms on 2K-file monorepo)
+- **Fixed EMFILE on large repos**: Function-based chokidar ignore with O(1) Set lookup prevents opening excluded directory handles
+- **Tree loads on initial open**: Fixed bug where tree was never requested on page load
+- **Collapsible signature sections**: Header, Types, and Methods sections are clickable with chevron and item counts
+- **Loading states**: Shows "Loading..." when switching files instead of stale content
+- **Empty state**: Shows "No signatures found" for files without types/methods
+- **Source line numbers**: Fixed double-escaped newline that showed only 1 line number
+- **Fixed middot encoding**: Header stats now display `·` correctly
+- **Fixed source tab**: No longer destroys DOM elements when switching files
+
 ## [0.1.6] - 2026-03-06
 
 ### CLI

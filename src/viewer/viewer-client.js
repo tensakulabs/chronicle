@@ -1340,6 +1340,9 @@
     initTaskInlineEdit();
     initTaskDragDrop();
 
-    // Request tasks on load
-    setTimeout(function() { send({ type: 'getTasks' }); }, 200);
+    // Request tree and tasks on load
+    setTimeout(function() {
+        send({ type: 'getTree', mode: currentTreeMode });
+        send({ type: 'getTasks' });
+    }, 200);
 })();

@@ -909,7 +909,7 @@ function getViewerHTML(projectPath: string): string {
                     <span class="loading-dot"></span>
                     <span class="loading-dot"></span>
                     <span class="loading-dot"></span>
-                    <span>Indexing project...</span>
+                    <span>Loading project...</span>
                 </div>
                 <div id="tree-root"></div>
             </div>

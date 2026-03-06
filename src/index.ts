@@ -19,6 +19,41 @@ import { stopViewer } from './viewer/server.js';
 async function main() {
     const args = process.argv.slice(2);
 
+    // CLI mode: --version / -v
+    if (args[0] === '--version' || args[0] === '-v') {
+        const { createRequire } = await import('module');
+        const require = createRequire(import.meta.url);
+        const pkg = require('../package.json');
+        console.log(pkg.version);
+        return;
+    }
+
+    // CLI mode: --help / -h / help
+    if (args[0] === '--help' || args[0] === '-h' || args[0] === 'help') {
+        console.log(`${PRODUCT_NAME} - MCP Server for persistent code indexing
+
+Usage: ${PRODUCT_NAME_LOWER} [command] [options]
+
+Commands:
+  init <path>       Index a project (creates .chronicle/)
+  scan <path>       Find indexed projects in directory tree
+  setup             Register as MCP server in AI clients
+  unsetup           Remove MCP server registration
+  help              Show this help message
+
+Options:
+  -v, --version     Show version number
+  -h, --help        Show this help message
+
+Running without a command starts the MCP server (stdio transport).
+
+Examples:
+  ${PRODUCT_NAME_LOWER} init .              Index current directory
+  ${PRODUCT_NAME_LOWER} scan ~/projects     Find all indexed projects
+  ${PRODUCT_NAME_LOWER} setup               Auto-register with Claude, Cursor, etc.`);
+        return;
+    }
+
     // CLI mode: scan
     if (args[0] === 'scan') {
         const searchPath = args[1];
@@ -90,7 +125,42 @@ async function main() {
         return;
     }
 
-    // Default: Start MCP server
+    // Interactive terminal: show helpful info instead of silently starting server
+    if (process.stdin.isTTY && args.length === 0) {
+        const { createRequire } = await import('module');
+        const require = createRequire(import.meta.url);
+        const pkg = require('../package.json');
+
+        console.log(`
+  ${PRODUCT_NAME} v${pkg.version}
+  MCP Server for persistent code indexing
+
+  Quick Start:
+    ${PRODUCT_NAME_LOWER} init .              Index current project
+    ${PRODUCT_NAME_LOWER} scan ~/projects     Find indexed projects
+    ${PRODUCT_NAME_LOWER} setup               Register with AI clients
+
+  Commands:
+    init <path>       Index a project (creates .chronicle/)
+    scan <path>       Find indexed projects in directory tree
+    setup             Register as MCP server in AI clients
+    unsetup           Remove MCP server registration
+
+  Options:
+    -v, --version     Show version number
+    -h, --help        Show full help
+
+  The MCP server starts automatically when invoked by an AI client.
+  To start it manually: ${PRODUCT_NAME_LOWER} serve
+`);
+        return;
+    }
+
+    // Start MCP server (default for non-TTY / piped stdin, or explicit 'serve')
+    if (args[0] === 'serve') {
+        // Explicit serve command — strip it so server doesn't see it
+    }
+
     const server = createServer();
 
     // Graceful shutdown handlers

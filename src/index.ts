@@ -14,7 +14,7 @@ import { createServer } from './server/mcp-server.js';
 import { scan, init } from './commands/index.js';
 import { setupMcpClients, unsetupMcpClients } from './commands/setup.js';
 import { PRODUCT_NAME, PRODUCT_NAME_LOWER } from './constants.js';
-import { stopViewer } from './viewer/server.js';
+import { startViewer, stopViewer } from './viewer/server.js';
 
 async function main() {
     const args = process.argv.slice(2);
@@ -37,6 +37,7 @@ Usage: ${PRODUCT_NAME_LOWER} [command] [options]
 Commands:
   init <path>       Index a project (creates .chronicle/)
   scan <path>       Find indexed projects in directory tree
+  viewer [path]     Open interactive project explorer (default: .)
   setup             Register as MCP server in AI clients
   unsetup           Remove MCP server registration
   help              Show this help message
@@ -50,6 +51,7 @@ Running without a command starts the MCP server (stdio transport).
 Examples:
   ${PRODUCT_NAME_LOWER} init .              Index current directory
   ${PRODUCT_NAME_LOWER} scan ~/projects     Find all indexed projects
+  ${PRODUCT_NAME_LOWER} viewer              Open viewer for current project
   ${PRODUCT_NAME_LOWER} setup               Auto-register with Claude, Cursor, etc.`);
         return;
     }
@@ -125,6 +127,17 @@ Examples:
         return;
     }
 
+    // CLI mode: viewer
+    if (args[0] === 'viewer') {
+        const { resolve } = await import('path');
+        const projectPath = resolve(args[1] ?? '.');
+        const result = await startViewer(projectPath);
+        console.log(result);
+        console.log('Press Ctrl+C to stop.');
+        // Keep process alive until interrupted
+        await new Promise(() => {});
+    }
+
     // Interactive terminal: show helpful info instead of silently starting server
     if (process.stdin.isTTY && args.length === 0) {
         const { createRequire } = await import('module');
@@ -143,6 +156,7 @@ Examples:
   Commands:
     init <path>       Index a project (creates .chronicle/)
     scan <path>       Find indexed projects in directory tree
+    viewer [path]     Open interactive project explorer
     setup             Register as MCP server in AI clients
     unsetup           Remove MCP server registration
 

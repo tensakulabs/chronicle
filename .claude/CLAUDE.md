@@ -41,7 +41,7 @@ Registered as MCP Server `chronicle` (Prefix: `mcp__chronicle__chronicle_*`).
 ### Search & Index
 | Tool | Description |
 |------|-------------|
-| `chronicle_init` | Index a project |
+| `chronicle_init` | Index a project (auto-cleans excluded files) |
 | `chronicle_query` | Search terms (exact/contains/starts_with), time filter |
 | `chronicle_status` | Index statistics |
 | `chronicle_update` | Re-index a single file |
@@ -67,14 +67,14 @@ Registered as MCP Server `chronicle` (Prefix: `mcp__chronicle__chronicle_*`).
 | `chronicle_link/unlink/links` | Link dependencies |
 | `chronicle_scan` | Find indexed projects |
 
-### Session (v1.2+)
+### Session
 | Tool | Description |
 |------|-------------|
 | `chronicle_session` | Start session, detect external changes |
 | `chronicle_note` | Session notes (persisted in DB) |
-| `chronicle_viewer` | Browser explorer with live reload (v1.3) |
+| `chronicle_viewer` | Browser explorer with live reload |
 
-### Task Backlog (v1.8+)
+### Task Backlog
 | Tool | Description |
 |------|-------------|
 | `chronicle_task` | Task CRUD + Log (create/read/update/delete/log) |
@@ -82,7 +82,7 @@ Registered as MCP Server `chronicle` (Prefix: `mcp__chronicle__chronicle_*`).
 
 Status: `backlog -> active -> done | cancelled`
 
-### Screenshots (v1.9+)
+### Screenshots
 | Tool | Description |
 |------|-------------|
 | `chronicle_screenshot` | Take screenshot (fullscreen/active_window/window/region) |
@@ -97,15 +97,22 @@ C# · TypeScript · JavaScript · Rust · Python · C · C++ · Java · Go · PH
 ```
 src/
 ├── index.ts              # Entry Point (MCP + CLI)
+├── constants.ts          # Product name, index dir
 ├── server/
 │   ├── mcp-server.ts     # MCP Protocol
 │   └── tools.ts          # Tool Handler
 ├── commands/             # Tool Implementations
-│   ├── init.ts, query.ts, signature.ts, update.ts
+│   ├── init.ts           # Project indexing (single-pass walk)
+│   ├── query.ts, signature.ts, update.ts
 │   ├── summary.ts, link.ts, scan.ts, files.ts
 │   ├── session.ts, note.ts, task.ts
-│   ├── screenshot/              # Platform Screenshots
-│   └── viewer/server.ts
+│   ├── setup.ts          # MCP client registration
+│   └── screenshot/       # Platform screenshots
+├── viewer/
+│   ├── server.ts         # Express + WebSocket server
+│   ├── viewer.css        # Viewer styles
+│   ├── viewer-client.js  # Client-side JS
+│   └── git-status.ts     # Git integration
 ├── db/
 │   ├── database.ts       # SQLite (WAL)
 │   ├── queries.ts        # Prepared Statements
@@ -134,14 +141,14 @@ src/
 
 ## Key Features
 
-### Time Filter (v1.1)
+### Time Filter
 ```
 chronicle_query({ term: "render", modified_since: "2h" })
 chronicle_files({ path: ".", modified_since: "30m" })
 ```
 Formats: `30m`, `2h`, `1d`, `1w`, ISO date
 
-### Session Notes (v1.2)
+### Session Notes
 ```
 chronicle_note({ path: ".", note: "Test the fix" })        # Write
 chronicle_note({ path: ".", append: true, note: "+" })     # Append
@@ -149,7 +156,7 @@ chronicle_note({ path: "." })                               # Read
 chronicle_note({ path: ".", clear: true })                  # Clear
 ```
 
-### Interactive Viewer (v1.3)
+### Interactive Viewer
 ```
 chronicle_viewer({ path: "." })                        # http://localhost:3333
 chronicle_viewer({ path: ".", action: "close" })
@@ -158,9 +165,9 @@ chronicle_viewer({ path: ".", action: "close" })
 - Signature display
 - Live reload (chokidar)
 - Syntax highlighting
-- Git status icons (v1.3.1)
+- Git status icons
 
-### Task Backlog (v1.8)
+### Task Backlog
 ```
 chronicle_task({ path: ".", action: "create", title: "Fix bug", priority: 1, tags: "bug" })
 chronicle_task({ path: ".", action: "read", id: 1 })           # Read task + log
@@ -175,7 +182,7 @@ chronicle_tasks({ path: ".", status: "active", tag: "bug" })    # Filtered
 - Auto-log on status changes and task creation
 - Viewer: Tasks tab with priority colors, done toggle, cancelled section (strikethrough)
 
-### Screenshots (v1.9)
+### Screenshots
 ```
 chronicle_screenshot()                                             # Full screen
 chronicle_screenshot({ mode: "active_window" })                    # Active window
@@ -190,22 +197,25 @@ chronicle_windows({ filter: "chrome" })                            # Find window
 - Optional: `filename` and `save_path` for custom paths
 - Returns: File path so Claude can immediately call `Read`
 
-### Auto-Cleanup (v1.3.1)
-`chronicle_init` automatically removes files that are now excluded (e.g. build/).
-Shows "Files removed: N" in results.
-
 ## CLI
 
 ```bash
-node build/index.js              # MCP Server
-node build/index.js scan <path>  # Find projects
-node build/index.js init <path>  # Index project
+chronicle                       # Quick-start guide (in terminal)
+chronicle init <path>           # Index a project
+chronicle scan <path>           # Find indexed projects
+chronicle viewer [path]         # Open interactive viewer (default: .)
+chronicle setup                 # Register as MCP server in AI clients
+chronicle unsetup               # Remove MCP server registration
+chronicle serve                 # Start MCP server explicitly
+chronicle --version             # Show version
+chronicle --help                # Show full help
 ```
 
 ## Implementation Details
 
 - **Tree-sitter:** 1MB buffer for large files
 - **Hash-Diff:** Line timestamps preserved when hash unchanged
+- **Single-pass walk:** O(1) Set lookup for excluded dirs, pre-compiled minimatch for complex patterns
 - **Arrow Functions:** Detected as methods (intentional, slight noise)
 - **Keyword Filter:** Per language in `src/parser/languages/`
 

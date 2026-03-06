@@ -428,7 +428,7 @@
         // Generate line numbers
         var lineNums = document.getElementById('src-line-numbers');
         if (lineNums) {
-            var lineCount = (data.content || '').split('\\n').length;
+            var lineCount = (data.content || '').split('\n').length;
             var html = '';
             for (var i = 1; i <= lineCount; i++) {
                 html += '<span>' + i + '</span>';

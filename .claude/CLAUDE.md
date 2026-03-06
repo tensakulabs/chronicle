@@ -2,7 +2,7 @@
 
 MCP Server for persistent code indexing. Gives AI assistants instant access to your codebase through pre-built indexes. 50x less context than grep.
 
-**Version:** 0.1.4 | **Languages:** 11 | **Repo:** https://github.com/tensakulabs/chronicle
+**Version:** 0.1.5 | **Languages:** 11 | **Repo:** https://github.com/tensakulabs/chronicle
 
 ## Build & Run
 

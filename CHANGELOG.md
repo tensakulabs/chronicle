@@ -2,6 +2,14 @@
 
 All notable changes to Chronicle will be documented in this file.
 
+## [0.1.5] - 2026-03-06
+
+### CLI
+- **`--version` / `-v` flag**: Print version number and exit
+- **`--help` / `-h` flag**: Show full usage with commands, options, and examples
+- **TTY detection**: Bare `chronicle` in terminal shows branded quick-start guide; non-TTY (MCP client) starts server silently as before
+- **`serve` subcommand**: Explicit command to start the MCP server
+
 ## [0.1.4] - 2026-03-06
 
 ### Performance

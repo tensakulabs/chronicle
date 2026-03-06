@@ -318,6 +318,8 @@
         var typeList = document.getElementById('sig-type-list');
         if (typesSection && typeList) {
             typeList.innerHTML = '';
+            var typesCount = document.getElementById('sig-types-count');
+            if (typesCount) typesCount.textContent = data.types && data.types.length > 0 ? '(' + data.types.length + ')' : '';
             if (data.types && data.types.length > 0) {
                 data.types.forEach(function(t) {
                     var li = document.createElement('li');
@@ -343,6 +345,8 @@
         var methodList = document.getElementById('sig-method-list');
         if (methodsSection && methodList) {
             methodList.innerHTML = '';
+            var methodsCount = document.getElementById('sig-methods-count');
+            if (methodsCount) methodsCount.textContent = data.methods && data.methods.length > 0 ? '(' + data.methods.length + ')' : '';
             if (data.methods && data.methods.length > 0) {
                 data.methods.forEach(function(m) {
                     var li = document.createElement('li');
@@ -1352,8 +1356,22 @@
         });
     }
 
+    // ── Collapsible Sections ──
+    function initCollapsible() {
+        document.querySelectorAll('.sig-section-title.collapsible').forEach(function(title) {
+            title.addEventListener('click', function() {
+                var targetId = title.getAttribute('data-target');
+                var body = document.getElementById(targetId);
+                if (!body) return;
+                title.classList.toggle('collapsed');
+                body.classList.toggle('collapsed');
+            });
+        });
+    }
+
     // ── Init ──
     connect();
+    initCollapsible();
     initTabs();
     initTreeFilters();
     initSplitter();

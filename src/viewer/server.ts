@@ -947,16 +947,16 @@ function getViewerHTML(projectPath: string): string {
                     </div>
                     <div id="sig-content" class="hidden">
                         <div class="sig-section" id="sig-header-section">
-                            <div class="sig-section-title">Header</div>
-                            <div class="sig-header-comment" id="sig-header-comment"></div>
+                            <div class="sig-section-title collapsible" data-target="sig-header-comment"><span class="collapse-chevron"></span>Header</div>
+                            <div class="sig-section-body" id="sig-header-comment"></div>
                         </div>
                         <div class="sig-section" id="sig-types-section">
-                            <div class="sig-section-title">Types</div>
-                            <ul class="sig-type-list" id="sig-type-list"></ul>
+                            <div class="sig-section-title collapsible" data-target="sig-type-list"><span class="collapse-chevron"></span>Types <span class="sig-section-count" id="sig-types-count"></span></div>
+                            <ul class="sig-section-body sig-type-list" id="sig-type-list"></ul>
                         </div>
                         <div class="sig-section" id="sig-methods-section">
-                            <div class="sig-section-title">Methods</div>
-                            <ul class="sig-method-list" id="sig-method-list"></ul>
+                            <div class="sig-section-title collapsible" data-target="sig-method-list"><span class="collapse-chevron"></span>Methods <span class="sig-section-count" id="sig-methods-count"></span></div>
+                            <ul class="sig-section-body sig-method-list" id="sig-method-list"></ul>
                         </div>
                     </div>
                 </div>

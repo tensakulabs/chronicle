@@ -20,6 +20,7 @@ import { openDatabase, createQueries } from '../db/index.js';
 import { update as updateIndex } from '../commands/update.js';
 import { getGitStatus, GitStatusInfo, GitFileStatus } from './git-status.js';
 import { PRODUCT_NAME, INDEX_DIR } from '../constants.js';
+import { EXCLUDED_DIRS } from '../commands/init.js';
 import type Database from 'better-sqlite3';
 
 const PORT = 3333;
@@ -167,14 +168,12 @@ export async function startViewer(projectPath: string): Promise<string> {
     // Use chokidar for reliable cross-platform file watching
     fileWatcher = chokidar.watch(projectRoot, {
         ignored: [
-            '**/node_modules/**',
-            '**/.git/**',
+            ...EXCLUDED_DIRS.flatMap(d => [`**/${d}`, `**/${d}/**`]),
             `**/${INDEX_DIR}/**`,
-            '**/build/**',
-            '**/dist/**'
         ],
         ignoreInitial: true,
-        persistent: true
+        persistent: true,
+        usePolling: false,
     });
 
     fileWatcher.on('ready', () => {

@@ -50,7 +50,7 @@ export interface InitResult {
 
 // Directory patterns that should prevent glob from descending into them.
 // Each entry generates both '**/name' (matches the dir) and '**/name/**' (matches contents).
-const EXCLUDED_DIRS = [
+export const EXCLUDED_DIRS = [
     'node_modules', 'packages', 'vendor', 'vendor/bundle',
     'bin', 'obj', 'bld', 'build', 'dist', 'out', 'target',
     'Debug', 'Release', 'x64', 'x86',

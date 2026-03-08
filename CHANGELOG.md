@@ -2,6 +2,20 @@
 
 All notable changes to Chronicle will be documented in this file.
 
+## [0.1.8] - 2026-03-08
+
+### Performance
+- **Consolidated `getStats()`**: Replaced 7 separate `SELECT COUNT(*)` queries with a single combined subquery, cached as a prepared statement
+- **Transaction-wrapped bulk ops**: `clearFileData()`, `bulkInsertLines()`, and `bulkInsertOccurrences()` now run inside `db.transaction()` to reduce fsync overhead
+- **Batch occurrence queries**: Added `getOccurrencesByItems()` with 500-item IN-clause batching, eliminating N+1 query pattern in search
+
+### Features
+- **Global search**: Search across all indexed projects from a single query via `ATTACH DATABASE`
+
+### Testing & CI
+- **Unit test suite**: 65 tests across 4 modules (database, queries, parser/extractor, commands/query)
+- **CI workflow**: GitHub Actions with separate build and test jobs
+
 ## [0.1.7] - 2026-03-06
 
 ### Viewer

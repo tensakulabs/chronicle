@@ -91,44 +91,41 @@ export function query(params: QueryParams): QueryResult {
         // Pre-compile file filter regex
         const fileFilterRegex = params.fileFilter ? globToRegex(params.fileFilter) : null;
 
-        // Collect all occurrences
+        // Collect all occurrences in a single batch query
+        const allOccurrences = queries.getOccurrencesByItems(items.map(i => i.id));
         let allMatches: QueryMatch[] = [];
 
-        for (const item of items) {
-            const occurrences = queries.getOccurrencesByItem(item.id);
+        for (const occ of allOccurrences) {
+            // Apply file filter
+            if (fileFilterRegex && !fileFilterRegex.test(occ.path.replace(/\\/g, '/'))) {
+                continue;
+            }
 
-            for (const occ of occurrences) {
-                // Apply file filter
-                if (fileFilterRegex && !fileFilterRegex.test(occ.path.replace(/\\/g, '/'))) {
+            // Apply type filter
+            if (params.typeFilter && params.typeFilter.length > 0) {
+                if (!params.typeFilter.includes(occ.line_type)) {
                     continue;
                 }
-
-                // Apply type filter
-                if (params.typeFilter && params.typeFilter.length > 0) {
-                    if (!params.typeFilter.includes(occ.line_type)) {
-                        continue;
-                    }
-                }
-
-                // Apply time filters
-                if (modifiedSinceTs !== null && occ.modified !== null) {
-                    if (occ.modified < modifiedSinceTs) {
-                        continue;
-                    }
-                }
-                if (modifiedBeforeTs !== null && occ.modified !== null) {
-                    if (occ.modified > modifiedBeforeTs) {
-                        continue;
-                    }
-                }
-
-                allMatches.push({
-                    file: occ.path,
-                    lineNumber: occ.line_number,
-                    lineType: occ.line_type,
-                    modified: occ.modified ?? undefined,
-                });
             }
+
+            // Apply time filters
+            if (modifiedSinceTs !== null && occ.modified !== null) {
+                if (occ.modified < modifiedSinceTs) {
+                    continue;
+                }
+            }
+            if (modifiedBeforeTs !== null && occ.modified !== null) {
+                if (occ.modified > modifiedBeforeTs) {
+                    continue;
+                }
+            }
+
+            allMatches.push({
+                file: occ.path,
+                lineNumber: occ.line_number,
+                lineType: occ.line_type,
+                modified: occ.modified ?? undefined,
+            });
         }
 
         // Remove duplicates (same file + line)
